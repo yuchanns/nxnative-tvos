@@ -339,12 +339,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         public int GetGeometryOutputIndexBufferStridePerInstance()
         {
-            return MaxOutputVertices + OutputTopology switch
-            {
-                OutputTopology.LineStrip => MaxOutputVertices / 2,
-                OutputTopology.TriangleStrip => MaxOutputVertices / 3,
-                _ => MaxOutputVertices,
-            };
+            // Every emitted vertex may end a strip, including incomplete strips.
+            // Empty cuts are suppressed by EmitterContextInsts.EndPrimitive.
+            return checked(MaxOutputVertices * 2);
         }
 
         public int GetGeometryOutputIndexBufferStride()

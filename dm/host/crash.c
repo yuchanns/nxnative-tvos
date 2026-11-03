@@ -180,6 +180,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
 }
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
 // The alternate stack is released when the thread exits: the pthread key destructor is called at thread exit (disable the alternate stack first, then free). The game frequently starts short-lived threads, and without releasing each one leaks 64 KiB.
+#if !TARGET_OS_TV
 static pthread_key_t g_altstack_key;
 static pthread_once_t g_altstack_once = PTHREAD_ONCE_INIT;
 static void altstack_free(void *p) { stack_t off = {.ss_flags = SS_DISABLE}; sigaltstack(&off, 0); free(p); }
@@ -190,9 +191,16 @@ void crash_thread_init(void) {
     stack_t ss = {.ss_sp = malloc(65536), .ss_size = 65536}; sigaltstack(&ss, 0);
     pthread_setspecific(g_altstack_key, ss.ss_sp);
 }
+#else
+// tvOS does not expose alternate signal stacks.
+void crash_thread_init(void) {}
+#endif
 void crash_install(void) {
     crash_thread_init();
     struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_ONSTACK};
+#if TARGET_OS_TV
+    sa.sa_flags &= ~SA_ONSTACK;
+#endif
     sigaction(SIGALRM, &sa, 0);
     // Both watchdogs are turned on only when a test explicitly sets DM_WATCH / DM_WATCH_STALL: the product (the player launches from the desktop, no environment variables) turns on neither.
     // Found by reading the code: iOS main.m did setenv DM_WATCH=30 by default → the player's launch was killed by SIGALRM at 30 s; the no-progress watchdog defaulted to 15 s → the pause menu (ticks stopped) was killed at 15 s

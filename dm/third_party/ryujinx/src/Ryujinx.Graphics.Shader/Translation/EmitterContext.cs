@@ -156,6 +156,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                     this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryOutputVertexCountMemoryId, Const(0));
                     this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryOutputIndexCountMemoryId, Const(0));
+                    this.Store(StorageKind.LocalMemory, ResourceManager.LocalGeometryEndVertexCountMemoryId, Const(0));
                 }
             }
         }

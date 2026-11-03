@@ -30,6 +30,7 @@ typedef struct {
     size_t size;
     uint64_t text_end, ro_off, data_off, key_page_off, key_page_size;   // From the rewriter fixups header
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
+    uint64_t render_size_off;  // optional guest framebuffer dimensions, supplied by a build-checked rewriter stub
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     char build_id[33];         // First 16 bytes of the NSO build ID (hex); empty for older build outputs
@@ -62,6 +63,7 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20, OBS_MAX = 21 };   // Metroid Dread 2.1.0's movie request ring (hle_movie.c)
 void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
 int gate_obs_present(int id);
+int gate_svc_present(int number);
 uint64_t now_ns(void);
 uint64_t guest_ns(void);              // Guest clock (hle_os.c; does not advance while frozen, guest_clock_freeze)
 int dm_detclock_enabled(void);
@@ -90,6 +92,9 @@ void dm_guest_write_prep_register(void (*fn)(void *addr, size_t len));
 void dm_res_report_register(void (*fn)(uint32_t tick, const char *why));   // Resource count callback (registered by the graphics layer): called every 250 ticks, when the loading screen has been dismissed, and on exit when the record is full
 void (*dm_res_report_cb(void))(uint32_t tick, const char *why);   // Get the registered resource count callback (null if not registered)
 void dm_guest_write_prepare(void *addr, size_t len);
+// Preserve data while lowering the paging priority of whole file-backed guest
+// pages. Anonymous guest memory and partial boundary pages are left alone.
+size_t dm_guest_memory_cold(const void *address, size_t bytes);
 // Graphics lifecycle (hle_nvn.c): on=1 suspends (afterwards submit / present block, and in-flight GPU work is drained before returning), on=0 resumes; called by the iOS front end when entering and leaving the background
 void dm_gfx_suspend(int on);
 void dm_gfx_enter(void); void dm_gfx_leave(void);   // hle_nvn.c: the gate dm_gfx_suspend closes, for graphics layers other than NVN (dm/gfx/vk)

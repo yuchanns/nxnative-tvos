@@ -52,6 +52,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         public int LocalVertexIndexInstanceRateMemoryId { get; private set; }
         public int LocalGeometryOutputVertexCountMemoryId { get; private set; }
         public int LocalGeometryOutputIndexCountMemoryId { get; private set; }
+        public int LocalGeometryEndVertexCountMemoryId { get; private set; }
 
         public ShaderProperties Properties { get; }
 
@@ -137,6 +138,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 LocalGeometryOutputVertexCountMemoryId = AddMemoryDefinition("local_geometry_output_vertex", AggregateType.U32);
                 LocalGeometryOutputIndexCountMemoryId = AddMemoryDefinition("local_geometry_output_index", AggregateType.U32);
+                LocalGeometryEndVertexCountMemoryId = AddMemoryDefinition("local_geometry_end_vertex", AggregateType.U32);
             }
         }
 

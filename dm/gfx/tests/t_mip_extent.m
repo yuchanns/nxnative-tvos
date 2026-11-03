@@ -5,6 +5,7 @@
 #undef nvn_game_fps
 #include "../nvn/hle_nvn.c"
 uint64_t g_t0_ns;   // process start time from host main.c (used by hle_nvn's per-frame @t_s); unit test stub
+int dm_guest_as_contains(uintptr_t address) { (void)address; return 0; }
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t g_mod[MAX_MOD]; int g_nmod;
@@ -13,7 +14,8 @@ uint64_t now_ns(void) { return bp_now(); }
 static int cases,failed; static prog_t colour_pg,depth_pg;
 #define EXPECT(n,w,v) do { uint64_t a=(w),b=(v);cases++;printf("%s expected %llu → got %llu %s\n",n,(unsigned long long)a,(unsigned long long)b,a==b?"✓":"✗");failed+=a!=b;}while(0)
 static tex_t make_tex(int w,int h,int levels,int format) {
-    static uint64_t ser=90000; tex_t t={.magic=MAGIC('T', 'E', 'X', 0), .serial =ser++};t.d.width=w;t.d.height=h;
+    // Independent fixtures need independent storage identities, including MRTs.
+    static pool_t pools[128];static unsigned next;static uint64_t ser=90000;if(next==128)abort();tex_t t={.magic=MAGIC('T', 'E', 'X', 0), .serial =ser++,.pool=&pools[next++]};t.d.width=w;t.d.height=h;
     t.d.depth=t.d.samples=1;t.d.levels=levels;t.d.target=NVN_TEXTURE_TARGET_2D;t.d.format=format;return t;
 }
 typedef struct { NVNcommandBuffer cb; pool_t pool; void *mem; } recording;
@@ -84,7 +86,7 @@ static void colour_case(const char *name,int lv,int sc,int clear_only,int slot,i
     else {h_nvnCommandBufferBindProgram(&r.cb,(const NVNprogram *)&colour_pg,3);h_nvnCommandBufferDrawArrays(&r.cb,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);}
     finish(&r);NSUInteger pre_w,pre_h;rt_dims(&pre_w,&pre_h);EXPECT("precheck: first target selected width upper bound",W[lv],pre_w);EXPECT("precheck: first target selected height upper bound",H[lv],pre_h);
     if(sc!=3||!clear_only){EXPECT("actual pass effective width",w,g_pass.tw);EXPECT("actual pass effective height",h,g_pass.th);}
-    colour_check(name,&t,lv,clear_only?(sc==3?0:1):2,w,h,sc==3);
+    colour_check(name,&t,lv,clear_only?1:2,w,h,sc==3);
     if(mrt)colour_check("MRT_unwritten_attachment",&other,-1,0,0,0,0);
 }
 static void plane_case(const char *name,int stencil,int clear_only) {
@@ -115,7 +117,7 @@ int main(int argc,char **argv){@autoreleasepool{
     else if(argc>1&&!strcmp(argv[1],"--oversized"))colour_case("oversized",1,2,0,0,0);
     else {for(int lv=0;lv<4;lv++){char name[64];snprintf(name,sizeof name,"bounded_L%d",lv);colour_case(name,lv,1,0,0,0);
             snprintf(name,sizeof name,"clear_L%d",lv);colour_case(name,lv,1,1,0,0);}
-        colour_case("partial_draw",1,3,0,0,0);colour_case("partial_clear_reject",1,3,1,0,0);colour_case("slot1_clear",1,1,1,1,0);
+        colour_case("partial_draw",1,3,0,0,0);colour_case("partial_clear_fallback",1,3,1,0,0);colour_case("slot1_clear",1,1,1,1,0);
         if(argc==1){colour_case("default",1,0,0,0,0);colour_case("oversized",1,2,0,0,0);colour_case("MRT_min",0,0,0,0,1);plane_case("depth",0,0);plane_case("stencil",1,0);plane_case("depth_clear",0,1);plane_case("stencil_clear",1,1);}}
     printf("== %d checks, %d failed ==\n",cases,failed);return failed!=0;
 }}

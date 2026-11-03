@@ -90,7 +90,9 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         o->layer_size = o->size = (uint64_t)t.bpb * d->width;
         o->align = t.bpb == 12 ? 4 : t.bpb; return;
     }
-    if (d->flags & 0x10) {                                            // LINEAR: row pitch = stride or aligned to 32
+    // LINEAR_RENDER_TARGET is linear on its own: P5R flags 0x44, 16x16 RGBA8,
+    // stride 128 requires 2048 bytes, not the block-linear 1024-byte allocation.
+    if (d->flags & 0x50) {                                            // LINEAR or LINEAR_RENDER_TARGET
         o->align = (d->flags & 0x40) ? 128 : 32;
         uint32_t stride = d->stride ? d->stride : (t.bpb * blk(w, t.bw) + o->align - 1) & ~(o->align - 1);
         o->layer_size = o->size = (uint64_t)stride * blk(h, t.bh);
@@ -118,7 +120,7 @@ uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level) {
     fmt_t t = fmt_of(d->format);
     unsigned dpl; int layered; uint32_t w, h, z;
     shape(d, &dpl, &layered, &w, &h, &z);
-    if (!t.bpb || (d->flags & 0x10) || d->target == 10) return 0;
+    if (!t.bpb || (d->flags & 0x50) || d->target == 10) return 0;
     nvn_texlayout L; nvn_tex_layout(d, &L);
     return level_offset(d, level, dpl, w, h, z, L.tileH, L.tileD, t);
 }

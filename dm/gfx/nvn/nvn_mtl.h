@@ -7,6 +7,11 @@
 
 void mtl_init(void);
 void mtl_vbuf_stats(uint64_t *resolve, uint64_t *reuse, uint64_t *set, uint64_t *skip);
+typedef struct {
+    uint64_t planes, total_ns, wait_ns, convert_ns, upload_ns, syncs;
+} mtl_bc_copy_timing;
+// Cumulative completed CPU conversions; their work may span frame boundaries.
+void mtl_bc_copy_timing_snapshot(mtl_bc_copy_timing *out);
 void mtl_set_depth_zero(int on);          // NVN depth mode: 1 = near is 0 (D3D / Metal), 0 = near is -w (GL, NVN's default); picks the vertex shaders' entry point (see shader_load in nvn_mtl.m)
 void mtl_set_origin_lower_left(int on);   // NVN window origin: 1 = lower left (GL, NVN's default), 0 = upper left (D3D / Metal); see nvn_mtl.m
 void bf_want_note(const char *key);
@@ -17,6 +22,7 @@ void mtl_pool_del(const void *mem);
 // memory pool Finalize: evict the textures built on this pool (pool object address) from the storage-sharing table
 void mtl_alias_drop_pool(const void *pool);
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off);   // 1 on success; buf is a (__bridge) id<MTLBuffer>
+const uint8_t *mtl_cpu_addr(uint64_t addr, uint64_t len);   // CPU-only lookup; does not promote GPU residency.
 
 typedef struct {
     uint32_t pso, cps, shaders, dss;
@@ -27,6 +33,14 @@ typedef struct {
 } mtl_res_count;
 void mtl_res_counts(uint32_t tick, const char *why);   // Print one line of resource counts (the host calls it per tick / event, see dm_res_report_register in dm.h)
 void mtl_res_snapshot(mtl_res_count *out);
+#ifdef __OBJC__
+@class NSDictionary;
+// Allocation inventory for diagnostics; does not measure physical residency.
+NSDictionary *mtl_memory_snapshot(void);
+NSDictionary *mtl_vertex_overlap_status(void);
+NSDictionary *mtl_vertex_buffers_status(void);
+NSDictionary *mtl_depth_attachments_status(void);
+#endif
 
 // One submit: begin -> several operations -> commit (returns the fence value at which this submit completes)
 void mtl_sub_begin(void);
@@ -42,6 +56,10 @@ void mtl_drain(void);                                // Wait for all commands on
 void mtl_xv_window_tex(uint64_t serial);   // Register a window (swapchain) texture: the cross-submit validity ledger never collects it
 // External producers (the Vulkan layer, dm/gfx/vk): the shared Metal device; a serial for one of their textures; present it once their event reaches ev_val (ticket for mtl_present_wait)
 void *mtl_device(void);
+int mtl_passgpu_request(unsigned frames);   // Accept a bounded capture only in explicit request mode.
+uint64_t mtl_vertex_overlap_request(int enabled);   // Apply a diagnostic switch at the next submission; returns its generation.
+uint64_t mtl_vertex_buffers_request(int enabled);
+uint64_t mtl_depth_attachments_request(int enabled);
 uint64_t mtl_ext_tex(void *tex);
 uint64_t mtl_present_ext(uint64_t serial, double period, void *ev, uint64_t ev_val, const int crop[4]);   // crop: x, y, w, h of the texture to show (NULL = all of it)
 void mtl_present_wait(uint64_t ticket);   // as in nvn_obj.h: wait until that present has been handed to the GPU

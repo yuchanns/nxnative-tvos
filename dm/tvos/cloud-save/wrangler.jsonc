@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nxnative-cloud-save",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  "secrets": { "required": ["SAVE_TOKEN"] },
+  "r2_buckets": [
+    { "binding": "SAVES", "bucket_name": "YOUR_SAVE_BUCKET" }
+  ],
+  "vars": { "SAVE_SCOPE": "0100f2c0115b6000" },
+  "env": {
+    "persona5": {
+      "name": "nxnative-p5-cloud-save",
+      "compatibility_date": "2026-11-01",
+      "vars": { "SAVE_SCOPE": "01004b10157f2000" },
+      "secrets": { "required": ["SAVE_TOKEN"] },
+      "r2_buckets": [{ "binding": "SAVES", "bucket_name": "YOUR_SAVE_BUCKET" }]
+    },
+    "verification": {
+      "name": "nxnative-cloud-save-verification",
+      "vars": { "SAVE_SCOPE": "validation-cloud-save" },
+      "secrets": { "required": ["SAVE_TOKEN"] },
+      "r2_buckets": [{ "binding": "SAVES", "bucket_name": "YOUR_SAVE_BUCKET" }]
+    }
+  }
+}

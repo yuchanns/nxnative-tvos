@@ -1,3 +1,4 @@
+// Distinct fixture textures need distinct pool identities for the alias cache.
 // Fixed command chain experiment: production mtl_exec, hand-written constant shaders and closed-form expectations; does not include the production reorderer.
 // G full stencil block, M small view + copy, U blend, R stencil resolve; only G/M are swapped.
 #include "../nvn/nvn_mtl.m"
@@ -26,7 +27,7 @@ static void state(chain *c, int kind, const void *s, size_t n) {
 static tex_t texture(unsigned w, unsigned levels, int depth) {
     static uint64_t ser=5000; tex_t t={.magic=MAGIC('T', 'E', 'X', 0), .serial =ser++}; t.d.width=t.d.height=w;
     t.d.depth=t.d.samples=1; t.d.levels=levels; t.d.target=NVN_TEXTURE_TARGET_2D;
-    t.d.format=depth?NVN_FORMAT_DEPTH32F_STENCIL8:NVN_FORMAT_RGBA8; return t;
+    t.d.format=depth?NVN_FORMAT_DEPTH32F_STENCIL8:NVN_FORMAT_RGBA8; t.pool=calloc(1,sizeof *t.pool); return t;
 }
 static void rt(chain *c, const tex_t *t, unsigned lv, const tex_t *ds) {
     p_set_rt r={.n=1,.depth=ds}; r.color[0]=t;
@@ -115,7 +116,9 @@ static result render_case(int mode,int reordered) {
     return execute(&c,&a,&b,&out,&e,NULL);
 }
 static uint64_t query_case(int reordered, int mode) {
-    tex_t a=texture(8,1,0),b=texture(4,1,0); chain c=make_chain(); uint64_t q[2]={UINT64_MAX,0}, type=NVN_COUNTER_TYPE_SAMPLES_PASSED;
+    tex_t a=texture(8,1,0),b=texture(4,1,0); chain c=make_chain(); uint64_t *q, type=NVN_COUNTER_TYPE_SAMPLES_PASSED;
+    if(posix_memalign((void **)&q,getpagesize(),getpagesize())) abort();
+    memset(q,0,getpagesize()); q[0]=UINT64_MAX; mtl_pool_add(q,getpagesize());
     emit(&c,OP_RESET_COUNTER,&type,8); stencil(&c,0,8,1,255,255,0); blending(&c,0);
     if(!reordered) { clear(&c,&a,0,NULL,0,0,0); draw_prog(&c,0,0); }
     if(mode!=1) emit(&c,OP_RESET_COUNTER,&type,8);
@@ -127,7 +130,8 @@ static uint64_t query_case(int reordered, int mode) {
     state_reset(); memset(&R,0,sizeof R); vis_clear(); g_vis_on=g_vis_counting=0; mtl_sub_begin(); mtl_exec(c.p);
     EXPECT("query completed",1,mtl_wait(mtl_sub_commit(),5000000000ull)); EXPECT("query: no error in commit feedback",0,mtl_last_commit_error());
     const char *names[]={"query","same_range_query","later_reset_overrides_query"};
-    save_raw(names[mode],reordered,q,sizeof q); mtl_pool_del(c.p); free(c.p); return q[0];
+    save_raw(names[mode],reordered,q,16); uint64_t samples=q[0];
+    mtl_pool_del(q); free(q); mtl_pool_del(c.p); free(c.p); return samples;
 }
 static void uniform_case(int reordered,uint8_t pixels[256]) {
     void *mem=NULL; if(posix_memalign(&mem,getpagesize(),getpagesize())) abort(); memset(mem,0,getpagesize());

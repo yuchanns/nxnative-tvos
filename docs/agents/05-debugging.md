@@ -44,7 +44,7 @@ Per-probe suffixes, in this order:
 | `?xN=val`, `?[xN+off]=val` | Only report hits where the register (or the 64-bit word at xN+off) equals `val` (hex); others pass silently. E.g. `main:4743c0?[x0+30]=781548` = only allocations into the heap whose size field is 0x781548 |
 | `!xN` | Treat xN as a `sead::ExpHeap` and print its free and used blocks (offset+size) |
 
-`DM_PROBE_ALL=1` adds x9–x18; `DM_PROBE_X2=<bytes>` dumps the memory x2 points to.
+`DM_PROBE_ALL=1` adds x9–x18; `DM_PROBE_SIMD=1` adds s0–s15 as floats; `DM_PROBE_X2=<bytes>` dumps the memory x2 points to. `DM_PROBE_AFTER=<seconds>` delays logging until that process time, `DM_PROBE_EVERY=<n>` logs every nth matching hit, and `DM_PROBE_LIMIT=<n>` caps printed hits per probe (0, the default, is unlimited). Unprinted hits still execute the original instruction. Use these bounds to sample gameplay after startup without producing a per-frame backtrace.
 
 Use it when lldb is unavailable: after macOS revokes the debugger authorization (`DevToolsSecurity -status` says developer mode is disabled), `lldb` launches hang waiting for a GUI approval prompt. `sudo DevToolsSecurity -enable` (run by the user) restores it.
 

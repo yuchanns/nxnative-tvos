@@ -67,8 +67,20 @@ void front_run(void (*guest)(void)) {
         [win makeKeyAndOrderFront:nil];
         g_screen_fps = (int)(win.screen ?: NSScreen.mainScreen).maximumFramesPerSecond;
         [NSApp activateIgnoringOtherApps:YES];
+        const char *fullscreen = getenv("DM_FULLSCREEN");
+        if (fullscreen && atoi(fullscreen)) [win toggleFullScreen:nil];
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
+            NSEventModifierFlags modifiers = e.modifierFlags;
+            if (e.keyCode == 3 && (modifiers & NSEventModifierFlagCommand) && (modifiers & NSEventModifierFlagControl)) {
+                if (e.type == NSEventTypeKeyDown && !e.isARepeat) [win toggleFullScreen:nil];
+                return nil;
+            }
+            if (e.keyCode == 12 && (modifiers & NSEventModifierFlagCommand)) {
+                if (e.type == NSEventTypeKeyDown && !e.isARepeat)
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ dm_host_shutdown("Command-Q"); });
+                return nil;
+            }
             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
             return nil;   // Swallow it to avoid the system beep
         }];

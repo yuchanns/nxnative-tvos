@@ -62,6 +62,10 @@ typedef struct thr {
     struct thr *next;          // Wait chain
     struct thr *all;           // All-threads chain (for the state dump)
     int last_svc; uint64_t last_lr;
+    uint64_t trace_tid, trace_block_ns, trace_wake_lag_ns, trace_wake_ns;
+    uint64_t trace_waker_tid, trace_waker_lr;
+    uint32_t trace_blocks, trace_waker;
+    char trace_name[32];
     int closed;                // Handle closed: the object is freed only when this holds together with exited (Horizon: the thread object goes away with the last reference)
     uint64_t nsvc;             // SVC count (for the state dump)
     uint64_t nyield, nyield_seen, nbackoff, nbackoff_seen;   // Yields (SleepThread 0/-1/-2) and those the back-off turned into short sleeps, with both counts at the last power report (dm_yield_top)
@@ -91,6 +95,80 @@ static struct { int type; void *obj; } g_h[MAX_H];
 static pthread_key_t g_keythr;
 static uint64_t g_next_id = 0x51;
 static thr_t *g_wait;          // All waiting threads (lock / condition / address / synchronization)
+
+// Optional wait attribution. Producers only copy completed calls into a bounded
+// queue; file formatting and writes happen on a separate host thread.
+typedef struct {
+    uint64_t start, end, cpu, blocked, wake_lag, tid, lr, args[4];
+    uint64_t waker_tid, waker_lr, wake;
+    uint32_t handle, svc, result, blocks, waker;
+    char name[32];
+} wait_trace_row;
+enum { WAIT_TRACE_CAP = 4096, WAIT_TRACE_BATCH = 512 };
+static wait_trace_row *g_wait_trace_rows;
+static unsigned g_wait_trace_head, g_wait_trace_count;
+static uint64_t g_wait_trace_dropped, g_wait_trace_min_ns = 2000000;
+static pthread_mutex_t g_wait_trace_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int g_wait_trace_on;
+static const char *thr_name(thr_t *t, char *nb, size_t n);
+
+static void wait_trace_append(const wait_trace_row *row) {
+    pthread_mutex_lock(&g_wait_trace_mu);
+    if (g_wait_trace_count == WAIT_TRACE_CAP) g_wait_trace_dropped++;
+    else {
+        unsigned index = (g_wait_trace_head + g_wait_trace_count++) % WAIT_TRACE_CAP;
+        g_wait_trace_rows[index] = *row;
+    }
+    pthread_mutex_unlock(&g_wait_trace_mu);
+}
+static void *wait_trace_writer(void *arg) {
+    FILE *file = arg;
+    pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+    wait_trace_row batch[WAIT_TRACE_BATCH];
+    for (;;) {
+        struct timespec delay = {0, 100000000}; nanosleep(&delay, NULL);
+        pthread_mutex_lock(&g_wait_trace_mu);
+        unsigned n = g_wait_trace_count < WAIT_TRACE_BATCH ? g_wait_trace_count : WAIT_TRACE_BATCH;
+        for (unsigned i = 0; i < n; i++) batch[i] = g_wait_trace_rows[(g_wait_trace_head + i) % WAIT_TRACE_CAP];
+        g_wait_trace_head = (g_wait_trace_head + n) % WAIT_TRACE_CAP; g_wait_trace_count -= n;
+        uint64_t dropped = g_wait_trace_dropped; g_wait_trace_dropped = 0;
+        pthread_mutex_unlock(&g_wait_trace_mu);
+        for (unsigned i = 0; i < n; i++) {
+            const wait_trace_row *r = &batch[i];
+            fprintf(file, "%llu\t%llu\t%llu\t%llu\t%llu\t%llu\t%#x\t%#x\t%#x\t%#llx\t%#llx\t%#llx\t%#llx\t%#llx\t%u\t%#x\t%llu\t%#llx\t%llu\t%s\n",
+                (unsigned long long)r->start, (unsigned long long)r->end, (unsigned long long)r->cpu,
+                (unsigned long long)r->blocked, (unsigned long long)r->wake_lag, (unsigned long long)r->tid,
+                r->handle, r->svc, r->result, (unsigned long long)r->lr,
+                (unsigned long long)r->args[0], (unsigned long long)r->args[1],
+                (unsigned long long)r->args[2], (unsigned long long)r->args[3], r->blocks, r->waker,
+                (unsigned long long)r->waker_tid, (unsigned long long)r->waker_lr, (unsigned long long)r->wake, r->name);
+        }
+        if (dropped) fprintf(file, "# dropped=%llu\n", (unsigned long long)dropped);
+        if (n || dropped) fflush(file);
+        if (ferror(file)) {
+            atomic_store_explicit(&g_wait_trace_on, 0, memory_order_relaxed);
+            LOG("[RED] wait trace write failed; tracing disabled"); fclose(file); return NULL;
+        }
+    }
+}
+static void wait_trace_init(void) {
+    const char *path = getenv("DM_WAIT_TRACE"); if (!path || !*path) return;
+    const char *threshold = getenv("DM_WAIT_TRACE_MIN_US");
+    if (threshold) { unsigned long us = strtoul(threshold, NULL, 10); if (us >= 100 && us <= 1000000) g_wait_trace_min_ns = us * 1000ull; }
+    FILE *file = fopen(path, "w");
+    if (!file) { LOG("[RED] cannot open wait trace %s", path); return; }
+    g_wait_trace_rows = calloc(WAIT_TRACE_CAP, sizeof *g_wait_trace_rows);
+    if (!g_wait_trace_rows) { fclose(file); LOG("[RED] cannot allocate wait trace queue"); return; }
+    fprintf(file, "# process_start_ns=%llu\n# minimum_ns=%llu\n", (unsigned long long)g_t0_ns, (unsigned long long)g_wait_trace_min_ns);
+    fputs("start_ns\tend_ns\tcpu_ns\tblocked_ns\twake_to_return_ns\ttid\thandle\tsvc\tresult\tlr\targ0\targ1\targ2\targ3\tblocks\twaker\twaker_tid\twaker_lr\twake_ns\tname\n", file);
+    fflush(file);
+    pthread_t thread;
+    int error = pthread_create(&thread, NULL, wait_trace_writer, file);
+    if (error) { free(g_wait_trace_rows); g_wait_trace_rows = NULL; fclose(file); LOG("[RED] cannot start wait trace writer: %s", strerror(error)); return; }
+    pthread_detach(thread);
+    atomic_store_explicit(&g_wait_trace_on, 1, memory_order_relaxed);
+    LOG("wait trace enabled: %s, completed SVC calls of at least %llu us", path, (unsigned long long)(g_wait_trace_min_ns / 1000));
+}
 
 static uint32_t h_new(int type, void *obj) {     // Caller holds G
     for (int i = 1; i < MAX_H; i++) if (!g_h[i].type) { g_h[i].type = type; g_h[i].obj = obj; return 0x1000 + i; }
@@ -160,12 +238,18 @@ static thr_t *pick(int kind, uint64_t a) {
     return b;
 }
 static void wake(thr_t *t, int64_t res) {
+    if (atomic_load_explicit(&g_wait_trace_on, memory_order_relaxed)) {
+        thr_t *source = pthread_getspecific(g_keythr);
+        t->trace_wake_ns = now_ns(); t->trace_waker = source ? source->handle : 0;
+        t->trace_waker_lr = source ? source->last_lr : 0;
+        pthread_threadid_np(NULL, &t->trace_waker_tid);
+    }
     wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
     thr_t *self = pthread_getspecific(g_keythr);   // the woken thread is pinned to this core with a higher priority: on Horizon it preempts at once (see dm_yield_to_core_peers)
     if (self && self != t && !t->host_owned && t->prio < self->prio && t->mask == 1ull << (self->core & 63)) self->yield_pending = 1;
 }
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
-static int64_t block(thr_t *t, int kind, int64_t ns) {
+static int64_t block_wait(thr_t *t, int kind, int64_t ns) {
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
     if (ns == 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     struct timespec dl;
@@ -184,6 +268,15 @@ static int64_t block(thr_t *t, int kind, int64_t ns) {
         if (rc == ETIMEDOUT && !t->woke && (!det_wait || guest_ns() >= guest_deadline)) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     }
     return t->wres;
+}
+static int64_t block(thr_t *t, int kind, int64_t ns) {
+    if (!atomic_load_explicit(&g_wait_trace_on, memory_order_relaxed)) return block_wait(t, kind, ns);
+    uint64_t start = now_ns(); t->trace_wake_ns = 0; t->trace_waker = 0; t->trace_waker_tid = t->trace_waker_lr = 0;
+    int64_t result = block_wait(t, kind, ns);
+    uint64_t end = now_ns();
+    t->trace_block_ns += end - start; t->trace_blocks++;
+    if (t->trace_wake_ns && end >= t->trace_wake_ns) t->trace_wake_lag_ns += end - t->trace_wake_ns;
+    return result;
 }
 
 // ---------- Locks ----------
@@ -340,6 +433,7 @@ uint32_t svc_thread_main_init(void) {
     pthread_setspecific(g_keythr, t);
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
+    wait_trace_init();
     return t->handle;
 }
 
@@ -590,6 +684,17 @@ static void sleep_precise(uint64_t dl) {
     }
 }
 int svc_thread(int num, uint64_t *regs) {
+    thr_t *trace_thread = atomic_load_explicit(&g_wait_trace_on, memory_order_relaxed) ? pthread_getspecific(g_keythr) : NULL;
+    int trace = trace_thread != NULL;
+    wait_trace_row row; uint64_t cpu_start = 0;
+    if (trace) {
+        memset(&row, 0, sizeof row);
+        row.start = now_ns(); cpu_start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+        row.svc = (uint32_t)num; row.lr = regs[30]; memcpy(row.args, regs, sizeof row.args);
+        trace_thread->trace_block_ns = trace_thread->trace_wake_lag_ns = trace_thread->trace_wake_ns = 0;
+        trace_thread->trace_blocks = trace_thread->trace_waker = 0;
+        trace_thread->trace_waker_tid = trace_thread->trace_waker_lr = 0;
+    }
     int r = svc_thread_impl(num, regs);
     thr_t *me = pthread_getspecific(g_keythr);
     static int on = -1; if (on < 0) { const char *e = getenv("DM_PREEMPT"); on = e ? atoi(e) != 0 : DM_GAME_CORE_PREEMPT; }
@@ -600,6 +705,24 @@ int svc_thread(int num, uint64_t *regs) {
         if (w) { if (w < 0) g_preempt_cap++; g_preempt_n++; g_preempt_ns += now_ns() - t0; }
     }
     if (me) me->yield_pending = 0;
+    if (trace) {
+        row.end = now_ns();
+        if (row.end - row.start >= g_wait_trace_min_ns) {
+            row.cpu = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpu_start;
+            if (!trace_thread->trace_tid) pthread_threadid_np(NULL, &trace_thread->trace_tid);
+            row.tid = trace_thread->trace_tid; row.handle = trace_thread->handle; row.result = (uint32_t)regs[0];
+            row.blocked = trace_thread->trace_block_ns; row.wake_lag = trace_thread->trace_wake_lag_ns;
+            row.blocks = trace_thread->trace_blocks; row.waker = trace_thread->trace_waker;
+            row.waker_tid = trace_thread->trace_waker_tid; row.waker_lr = trace_thread->trace_waker_lr; row.wake = trace_thread->trace_wake_ns;
+            if (!trace_thread->trace_name[0] || !strcmp(trace_thread->trace_name, "?")) {
+                char name[32]; const char *value = thr_name(trace_thread, name, sizeof name);
+                snprintf(trace_thread->trace_name, sizeof trace_thread->trace_name, "%s", value);
+                for (char *p = trace_thread->trace_name; *p; p++) if (*p == '\t' || *p == '\n' || *p == '\r') *p = '_';
+            }
+            memcpy(row.name, trace_thread->trace_name, sizeof row.name);
+            wait_trace_append(&row);
+        }
+    }
     return r;
 }
 static int svc_thread_impl(int num, uint64_t *regs) {

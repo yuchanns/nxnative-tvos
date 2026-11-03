@@ -27,7 +27,7 @@ static uint32_t mip(uint32_t s, unsigned l) { s >>= l; return s ? s : 1; }
 // Geometry of this level: width-in-blocks byte count, block row count, slice count, and where this level and layer starts in storage; returns -1 for unsupported textures
 int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
                        uint32_t *row_bytes, uint32_t *rows, uint32_t *slices, uint64_t *base, unsigned *th, unsigned *td, uint32_t *bpb) {
-    if (d->target == 5 || d->target == 6 || d->target == 10 || (d->flags & 0x10) || d->samples > 1) return -1;   // MS / BUFFER / LINEAR
+    if (d->target == 5 || d->target == 6 || d->target == 10 || (d->flags & 0x50) || d->samples > 1) return -1;   // MS / BUFFER / LINEAR / LINEAR_RENDER_TARGET
     int bw, bh; *bpb = (uint32_t)nvn_fmt_bpb(d->format, &bw, &bh);
     if (!*bpb || level >= (d->levels ? d->levels : 1)) return -1;
     nvn_texlayout L; nvn_tex_layout(d, &L);
@@ -60,6 +60,28 @@ static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *b
 
 int nvn_deswizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, void *dst, size_t dst_pitch) {
     return move(d, level, layer, (uint8_t *)src, (uint8_t *)dst, dst_pitch, 1);
+}
+int nvn_deswizzle_region(const nvn_texdesc *d, unsigned level, unsigned layer,
+                         const nvn_tex_region *r, const void *src, void *dst, size_t pitch) {
+    if (!d || !r || !src || !dst || level >= 32 || !r->width_bytes || !r->height_rows ||
+        pitch < r->width_bytes || (r->height_rows - 1) > (SIZE_MAX - r->width_bytes) / pitch) return -1;
+    uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td;
+    if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb) ||
+        r->x_bytes > row_bytes || r->width_bytes > row_bytes - r->x_bytes ||
+        r->y_rows > rows || r->height_rows > rows - r->y_rows || r->z >= slices) return -1;
+    const uint8_t *storage = (const uint8_t *)src + base;
+    for (uint32_t y = 0; y < r->height_rows; y++) {
+        uint8_t *row = (uint8_t *)dst + (size_t)y * pitch;
+        for (uint32_t x = 0; x < r->width_bytes;) {
+            uint32_t bx = r->x_bytes + x, count = 16 - bx % 16;
+            if (count > r->width_bytes - x) count = r->width_bytes - x;
+            // A subregion may start in the middle of a contiguous GOB segment.
+            memcpy(row + x, storage + nvn_bl_offset(bx, r->y_rows + y, r->z,
+                row_bytes, rows, th, td), count);
+            x += count;
+        }
+    }
+    return 0;
 }
 int nvn_swizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, size_t src_pitch, void *dst) {
     return move(d, level, layer, (uint8_t *)dst, (uint8_t *)src, src_pitch, 0);

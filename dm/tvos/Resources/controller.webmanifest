@@ -1,0 +1,13 @@
+{
+  "name": "Hyrule Controller",
+  "short_name": "Hyrule Pad",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#171b1d",
+  "theme_color": "#171b1d",
+  "icons": [
+    {"src": "/controller-icon.png", "sizes": "180x180", "type": "image/png"}
+  ]
+}

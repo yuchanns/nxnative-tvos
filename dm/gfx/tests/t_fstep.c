@@ -23,6 +23,22 @@ int main(void) {
     {   sim m = {0}; run(&m, 600, 0.5, 1, 3, 0);
         check(m.s.k == 1 && m.s.ups == 0 && m.s.paid == 0 && m.game == m.real, "steady 60: hold 1, step 1, game time = real time");
     }
+    {   sim m = {0}; run(&m, 60, 0.5, 1, 1, 0); run(&m, 600, 2.7, 1, 1, 0);
+        check(m.s.k == 1 && m.s.ups == 0, "fixed 60: sustained 45 ms work never requests a 30 or 20 fps hold");
+        check(m.s.late == 600 && m.s.dropped == 0 && fabs(m.real - m.game) < 3,
+              "fixed 60: missed refreshes remain visible and simulation time follows real time");
+        run(&m, 60, 0.5, 1, 1, 0);
+        check(m.s.k == 1 && m.next == 1 && fabs(m.game - m.real) < 1,
+              "fixed 60: recovered work resumes one-vsync steps without an adaptive trial");
+    }
+    {   sim m = {0}; run(&m, 120, 2.5, 1, 3, 0);
+        check(m.s.k == 3, "adaptive pacing before changing mode: hold 3");
+        run(&m, 1, 2.5, 1, 1, 0);
+        check(m.s.k == 1, "switch to fixed 60: release the adaptive hold immediately");
+        run(&m, 120, 4, 1, 1, 0);
+        check(m.s.k == 1 && m.s.dropped > 0 && m.next <= FSTEP_MAX,
+              "fixed 60: unsupported simulation delay is counted, never hidden by a slower hold");
+    }
     {   sim m = {0}; run(&m, 120, 0.5, 1, 3, 0); run(&m, 600, 1.32, 1, 3, 0);   // 22 ms frames
         snprintf(b, sizeof b, "steady 22 ms frames: 30 fps after three late frames, no flapping (k %d, ups %llu, downs %llu)", m.s.k, (unsigned long long)m.s.ups, (unsigned long long)m.s.downs);
         check(m.s.k == 2 && m.s.ups == 1 && m.s.downs == 0, b);

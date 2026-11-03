@@ -2,6 +2,9 @@
 
 Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator`, with these local changes:
 
+- `Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs`: keep nested `If` selections for SPIR-V (its generator does not emit `ElseIf` conditions), and preserve local pointer arguments to calls during expression propagation. Recovered from the earlier XB3 port and applied to the new offline translator.
+- Geometry-as-compute: expose a complete vertex input map and its actual register offsets for offline capture. Suppress emissions beyond `max_vertices` without terminating the shader, suppress empty cuts, and reserve index storage for a cut after every emitted vertex. Use the primitive count for the output instance stride; indexed draws may contain more primitives than distinct captured vertices.
+
 - `Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs`, `GenerateTextureSample`:
   - Texel offsets that are not constants (Maxwell AOFFI / TLD4.PTP offsets read from a register) are built with `OpCompositeConstruct` and passed as `Offset`. A four-offset gather becomes four one-offset gathers, each giving component w. Upstream wrote them as an `OpConstantComposite` with `ConstOffset(s)`, which is invalid SPIR-V; SPIRV-Cross threw `nullptr` and the shader never built (2026-10-18: 8 shaders in Wonder, Link's Awakening, Tears of the Kingdom and Age of Calamity). Marked `nxnative:` in the code.
   - Texture coordinates that are NaN are replaced by 0 (the `nfZero` select). This came with the first import.

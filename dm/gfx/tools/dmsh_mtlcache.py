@@ -15,6 +15,18 @@ _clonefile = getattr(ctypes.CDLL(None, use_errno=True), 'clonefile', None)   # A
 
 
 def clone(src, dst):
+    # Revalidating a complete library otherwise replaces tens of thousands of
+    # identical files. Compare bytes rather than timestamps: cached artifacts
+    # can preserve old mtimes even when their content has changed.
+    try:
+        if os.path.getsize(src) == os.path.getsize(dst):
+            with open(src, 'rb') as source, open(dst, 'rb') as destination:
+                while True:
+                    chunk = source.read(1 << 20)
+                    if chunk != destination.read(1 << 20): break
+                    if not chunk: return
+    except OSError:
+        pass
     tmp = f'{dst}.tmp-{os.getpid()}-{threading.get_ident()}'
     if _clonefile is None or _clonefile(os.fsencode(src), os.fsencode(tmp), 0) != 0: shutil.copyfile(src, tmp)
     os.replace(tmp, dst)

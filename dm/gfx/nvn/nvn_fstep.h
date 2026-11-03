@@ -27,7 +27,7 @@ typedef struct {
 } nvn_fstep;
 
 // Once per frame. shown: real time since the previous frame's start, in vsyncs; cost: the frame's work, max(CPU, GPU), in vsyncs (a GPU that cannot keep up makes frames late too); kmin: 1 at a 60 fps cap, 2 at 30;
-// kmax: the longest hold (FSTEP_MAX; 2 at a 30 fps cap, where the display link runs at 30 Hz and holds only even counts); fixed: a step the game has set itself (BotW's
+// kmax: the longest hold (FSTEP_MAX; 2 at a 30 fps cap; kmin for fixed pacing without adaptive holds); fixed: a step the game has set itself (BotW's
 // VFR override; 0 = none), which the host then holds as it is. Returns the step for the next frame; s->k is how long that frame stays on screen
 static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int kmin, int kmax, int fixed) {
     if (kmin < 1) kmin = 1;
@@ -60,7 +60,14 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
     } else if (s->trial && !--s->trial) s->hold = FSTEP_HOLD0;   // the trial held
     if (!late) s->fit_run = s->k > kmin && cost <= FSTEP_FIT * (s->k - 1) ? s->fit_run + 1 : 0;
     if (s->fit_run >= FSTEP_RUN && s->since >= s->hold && !s->trial) { s->k--; s->downs++; s->trial = FSTEP_RUN; s->fit_run = 0; }
-    s->step = s->k + (s->debt >= 1 && s->k < FSTEP_MAX);
-    s->paid += s->step > s->k;
+    int pay = s->debt >= 1 && s->k < FSTEP_MAX;
+    // Fixed presentation does not fix simulation time. Use the supported step range
+    // when frames miss multiple refreshes, without intentionally holding the next frame.
+    if (kmin == kmax && pay) {
+        pay = (int)s->debt;
+        if (pay > FSTEP_MAX - s->k) pay = FSTEP_MAX - s->k;
+    }
+    s->step = s->k + pay;
+    s->paid += pay;
     return s->step;
 }

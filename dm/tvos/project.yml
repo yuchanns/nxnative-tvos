@@ -1,0 +1,72 @@
+name: DmTV
+options:
+  deploymentTarget:
+    tvOS: "18.0"
+configFiles:
+  Release: ${NX_TV_GEN}/dm.xcconfig
+  Debug: ${NX_TV_GEN}/dm.xcconfig
+targets:
+  DmTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: ${NX_DM_SOURCE}/ios/Sources
+        excludes: [Info.plist]
+      - path: ${NX_DM_SOURCE}/tvos/Sources
+      - path: ${NX_TV_GEN}/Resources
+        buildPhase: resources
+      - path: ${NX_TV_GEN}/embed.S
+      - path: ${NX_TV_GEN}/Assets.xcassets
+      - path: ${NX_TV_GEN}/dm
+        type: folder
+        buildPhase: resources
+      - path: ${NX_TV_GEN}/src
+      - path: ${NX_TV_GEN}/main/main.c
+        compilerFlags: "-Dmain=dm_main"
+    info:
+      path: ${NX_TV_BUILD}/Info.plist
+      properties:
+        CFBundleDisplayName: ${DM_DISPLAY_NAME}
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        UILaunchStoryboardName: LaunchScreen
+        NSLocalNetworkUsageDescription: Connect a phone controller and export game diagnostics over the local network.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
+        LSApplicationCategoryType: ${DM_APP_CATEGORY}
+        DMShowFPS: YES
+        GCSupportsControllerUserInteraction: true
+        GCSupportedGameControllers:
+          - ProfileName: ExtendedGamepad
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default
+                UISceneDelegateClassName: SceneDelegate
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: ${DM_BUNDLE_ID}
+      PRODUCT_NAME: DmTV
+      MARKETING_VERSION: ${DM_APP_VERSION}
+      CURRENT_PROJECT_VERSION: ${DM_APP_BUILD}
+      TARGETED_DEVICE_FAMILY: "3"
+      ASSETCATALOG_COMPILER_APPICON_NAME: ${DM_APP_ICON}
+      HEADER_SEARCH_PATHS: $(inherited) ${NX_DM_SOURCE}/tvos/Sources
+      ENABLE_BITCODE: NO
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      CLANG_CXX_LANGUAGE_STANDARD: c++14
+      OTHER_CFLAGS: $(inherited) -mcpu=apple-a12
+      CLANG_ENABLE_OBJC_ARC: YES
+      CLANG_ENABLE_MODULES: YES
+      DEBUG_INFORMATION_FORMAT: dwarf
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
+      CODE_SIGN_IDENTITY: ""
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: GameController.framework
+      - sdk: AVFAudio.framework
+      - sdk: CoreText.framework
+      - sdk: Security.framework
+      - sdk: JavaScriptCore.framework

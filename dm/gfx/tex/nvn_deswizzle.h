@@ -9,6 +9,14 @@
 // 3D textures: all depth slices of this level are decoded at once; slice k is at dst_linear + k × dst_pitch × block row count of this level.
 // Not supported: multisampling, the LINEAR flag (already linear), BUFFER; returns -1 on these, 0 on success.
 int nvn_deswizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src_storage, void *dst_linear, size_t dst_pitch);
+typedef struct {
+    uint32_t x_bytes, y_rows, z, width_bytes, height_rows;
+} nvn_tex_region;
+// Read one rectangular slice without touching the rest of the level. Coordinates
+// are bytes and block rows, including for compressed formats. Padding is untouched.
+int nvn_deswizzle_region(const nvn_texdesc *d, unsigned level, unsigned layer,
+                         const nvn_tex_region *region, const void *src_storage,
+                         void *dst_linear, size_t dst_pitch);
 // Reverse (for unit test round trips): linear src_linear → written into the corresponding level / layer of the whole-texture storage dst_storage
 int nvn_swizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src_linear, size_t src_pitch, void *dst_storage);
 // Single-point address: within this level and layer, linear (x byte, y block row, z slice) → block-linear byte offset relative to the start of this level and layer (unit tests verify against hand calculation)

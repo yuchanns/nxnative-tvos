@@ -115,6 +115,29 @@ int main(void) {
         P(nvnTextureFinalize)(&original); P(nvnTextureFinalize)(&replacement);
     }
 
+    // Sampling mode is descriptor state even when the backing storage matches.
+    {
+        NVNtextureBuilder tb = {0}; NVNtexture depth = {0}, stencil = {0};
+        P(nvnTextureBuilderSetDevice)(&tb, &dev); P(nvnTextureBuilderSetDefaults)(&tb);
+        P(nvnTextureBuilderSetSize2D)(&tb, 4, 4);
+        P(nvnTextureBuilderSetFormat)(&tb, NVN_FORMAT_DEPTH32F_STENCIL8);
+        P(nvnTextureBuilderSetStorage)(&tb, &pool, 0);
+        EXPECT("builder default samples depth", 0, P(nvnTextureBuilderGetDepthStencilMode)(&tb));
+        P(nvnTextureInitialize)(&depth, &tb);
+        P(nvnTextureBuilderSetDepthStencilMode)(&tb, NVN_TEXTURE_DEPTH_STENCIL_MODE_STENCIL);
+        EXPECT("builder retains stencil mode", 1, P(nvnTextureBuilderGetDepthStencilMode)(&tb));
+        P(nvnTextureInitialize)(&stencil, &tb);
+        EXPECT("texture inherits stencil mode", 1, P(nvnTextureGetDepthStencilMode)(&stencil));
+        EXPECT("TextureCompare depth/stencil descriptors", 0, P(nvnTextureCompare)(&depth, &stencil));
+        EXPECT("TextureCompare stencil/depth descriptors", 0, P(nvnTextureCompare)(&stencil, &depth));
+        NVNtexture copy = stencil;
+        EXPECT("copied texture retains stencil mode", 1, P(nvnTextureGetDepthStencilMode)(&copy));
+        P(nvnTextureBuilderSetDefaults)(&tb);
+        EXPECT("builder defaults reset stencil mode", 0, P(nvnTextureBuilderGetDepthStencilMode)(&tb));
+        EXPECT("builder reset leaves texture unchanged", 1, P(nvnTextureGetDepthStencilMode)(&stencil));
+        P(nvnTextureFinalize)(&depth); P(nvnTextureFinalize)(&stencil);
+    }
+
     // 5. Command buffer: record uniform updates / events / counters / buffer copies / nested calls, with memory in 256 B segments to force multi-segment linking
     NVNcommandBuffer cb; P(nvnCommandBufferInitialize)(&cb, &dev);
     NVNmemoryPoolBuilder cpb; P(nvnMemoryPoolBuilderSetDefaults)(&cpb); P(nvnMemoryPoolBuilderSetStorage)(&cpb, g_cmdmem, sizeof g_cmdmem);
@@ -325,14 +348,16 @@ int main(void) {
                 static uint8_t want[1 << 18], lin[1 << 16], src[1 << 16];
                 int x = cs[c].rg[k][0], y = cs[c].rg[k][1], w = cs[c].rg[k][2], h = cs[c].rg[k][3], z = cs[c].layers - 1;
                 size_t wbb = (size_t)((w + bw - 1) / bw) * bpb, hbb = (size_t)(h + bh - 1) / bh;
-                for (size_t i = 0; i < wbb * hbb; i++) src[i] = (uint8_t)(seed = seed * 1103515245u + 12345u) >> 5;
+                size_t source_row = wbb + (k % 2 ? 7 : 0), source_image = source_row * hbb + 11;
+                for (size_t i = 0; i < source_image; i++) src[i] = (uint8_t)(seed = seed * 1103515245u + 12345u) >> 5;
                 memcpy(want, wtmem, tt->L.size);   // expected: decode the whole level, patch, re-encode (only the last layer)
                 nvn_deswizzle(&tt->d, 0, (unsigned)z, want, lin, lp);
-                for (size_t r = 0; r < hbb; r++) memcpy(lin + ((size_t)y / bh + r) * lp + (size_t)(x / bw) * bpb, src + r * wbb, wbb);
+                for (size_t r = 0; r < hbb; r++) memcpy(lin + ((size_t)y / bh + r) * lp + (size_t)(x / bw) * bpb, src + r * source_row, wbb);
                 nvn_swizzle(&tt->d, 0, (unsigned)z, lin, lp, want); (void)lr;
                 NVNtextureView vw; P(nvnTextureViewSetDefaults)(&vw); P(nvnTextureViewSetLayers)(&vw, z, 1);
                 NVNcopyRegion rg = {x, y, 0, w, h, 1};
-                write_texels(tt, cs[c].layers > 1 ? (const view_t *)&vw : NULL, &rg, src, 0, 0);
+                if (k % 2) P(nvnTextureWriteTexelsStrided)(&t, cs[c].layers > 1 ? &vw : NULL, &rg, src, source_row, source_image);
+                else P(nvnTextureWriteTexels)(&t, cs[c].layers > 1 ? &vw : NULL, &rg, src);
                 n++; if (memcmp(want, wtmem, tt->L.size)) bad++;
             }
             P(nvnTextureFinalize)(&t);

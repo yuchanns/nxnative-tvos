@@ -3,9 +3,11 @@
 //       iOS defaults to real audio output (the product must have sound), tests that want silence set DM_AUDIO=0 explicitly; Mac defaults to the silent sink (replay / gate checks are silent), DM_AUDIO=1 for real audio output.
 // The contents of AudioOut / AudioOutBuffer / AudioOutParameter are read and written only through the interfaces below; the host defines its own internal layout and only writes the front part of the structs.
 #include "hle.h"
+#include "hle_audio_diag.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
+#include <mach/mach_time.h>
 #include <stdatomic.h>
 #include <unistd.h>
 
@@ -21,6 +23,7 @@ typedef struct {
     int ch;
     _Atomic int state;
     gbuf *q[QMAX]; _Atomic uint32_t q_head, q_tail;       // Pending: written by the game side, read by the output side
+    uint64_t enqueue_ns[QMAX];          // Published with q_tail; owned by the same slot as q
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // Released: written by the output side, read by the game side
     uint64_t pos;                      // Bytes already played of the current block
     AudioUnit au;
@@ -36,6 +39,9 @@ typedef struct {
     _Atomic uint64_t cb_n;             // device callbacks of this output (the watchdog's evidence that the device still plays it)
     uint64_t wd_n, wd_t;               // watchdog: callback count last seen and when it last moved (under g_aos_lock)
     int stalled, retry_ms; uint64_t retry_at;   // the device stopped calling back (or would not start): the silent sink stands in and the watchdog retries the AudioUnit at retry_at, backing off
+    _Atomic uint64_t diag_sequence, diag_callback_ns, diag_queued_bytes, diag_oldest_enqueue_ns;
+    _Atomic int64_t diag_callback_lead_ns;
+    _Atomic int diag_host_time_valid;
 } aout;
 
 // Registry of open outputs: suspended / resumed all at once by the front-end lifecycle (going to background).
@@ -45,6 +51,8 @@ typedef struct {
 static aout *g_aos[AOMAX];
 static pthread_mutex_t g_aos_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_suspended;
+static mach_timebase_info_data_t g_audio_timebase;
+static void audio_clock_init(void) { mach_timebase_info(&g_audio_timebase); }
 static aout *ao(const void *g) { aout *a = objmap_get(g); if (!a) die("AudioOut %p was not created by the host", g); return a; }
 // the call site as "module+offset"; "host" when the host itself calls (in-process audio renderer)
 static const char *site(void *lr, char *buf, size_t n) {
@@ -112,9 +120,58 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
 
 static _Atomic uint64_t g_render_calls;   // Cumulative sound card callbacks (lifecycle verification: must keep growing after resume)
 uint64_t dm_audio_render_calls(void) { return atomic_load_explicit(&g_render_calls, memory_order_relaxed); }
+static void audio_sample(aout *a, const AudioTimeStamp *timestamp, uint64_t now) {
+    // Only the consumer inspects published slots. The producer cannot reuse
+    // any of these buffers until pull() publishes the next q_head.
+    uint32_t head = atomic_load_explicit(&a->q_head, memory_order_relaxed);
+    uint32_t tail = atomic_load_explicit(&a->q_tail, memory_order_acquire);
+    uint64_t bytes = 0, oldest = 0;
+    for (uint32_t i = head; i != tail; i++) bytes += a->q[i & (QMAX - 1)]->size;
+    if (head != tail) { bytes -= a->pos; oldest = a->enqueue_ns[head & (QMAX - 1)]; }
+    int valid = timestamp && (timestamp->mFlags & kAudioTimeStampHostTimeValid) && g_audio_timebase.denom;
+    int64_t lead = 0;
+    if (valid) {
+        uint64_t host_ns = (uint64_t)(((__uint128_t)timestamp->mHostTime * g_audio_timebase.numer) / g_audio_timebase.denom);
+        lead = host_ns >= now ? (int64_t)(host_ns - now) : -(int64_t)(now - host_ns);
+    }
+    // Atomics keep the bounded reader retry valid in the C memory model.
+    atomic_fetch_add(&a->diag_sequence, 1);
+    atomic_store(&a->diag_callback_ns, now);
+    atomic_store(&a->diag_queued_bytes, bytes);
+    atomic_store(&a->diag_oldest_enqueue_ns, oldest);
+    atomic_store(&a->diag_callback_lead_ns, lead);
+    atomic_store(&a->diag_host_time_valid, valid);
+    atomic_fetch_add(&a->diag_sequence, 1);
+}
+size_t dm_audio_snapshot(dm_audio_diagnostic *output, size_t capacity) {
+    if (!output || !capacity) return 0;
+    size_t count = 0;
+    pthread_mutex_lock(&g_aos_lock);
+    for (int i = 0; i < AOMAX && count < capacity; i++) {
+        aout *a = g_aos[i]; if (!a) continue;
+        dm_audio_diagnostic d = {.id = a->id, .channels = a->ch, .state = atomic_load(&a->state), .backend = a->backend};
+        int sampled = 0;
+        for (int retry = 0; retry < 3; retry++) {
+            uint64_t before = atomic_load(&a->diag_sequence);
+            if (before & 1) continue;
+            d.callback_ns = atomic_load(&a->diag_callback_ns);
+            d.queued_bytes = atomic_load(&a->diag_queued_bytes);
+            d.oldest_enqueue_ns = atomic_load(&a->diag_oldest_enqueue_ns);
+            d.callback_lead_ns = atomic_load(&a->diag_callback_lead_ns);
+            d.host_time_valid = atomic_load(&a->diag_host_time_valid);
+            if (before == atomic_load(&a->diag_sequence)) { sampled = 1; break; }
+        }
+        if (!sampled) continue;
+        d.callbacks = atomic_load(&a->cb_n);
+        output[count++] = d;
+    }
+    pthread_mutex_unlock(&g_aos_lock);
+    return count;
+}
 static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioTimeStamp *ts, UInt32 bus, UInt32 frames, AudioBufferList *bl) {
-    (void)f; (void)ts; (void)bus; (void)frames;
+    (void)f; (void)bus;
     aout *a = ctx;
+    audio_sample(a, ts, now_ns());
     atomic_fetch_add_explicit(&g_render_calls, 1, memory_order_relaxed); atomic_fetch_add_explicit(&a->cb_n, 1, memory_order_relaxed);
     {
         // Every 2000 callbacks of each output, log one line: frames requested per call, pending blocks at callback start, underruns (check this line on a new device; docs/agents/03-bringup.md "Crackling on iOS only").
@@ -226,6 +283,8 @@ HLE_FORCE("_ZN2nn5audio13ListAudioOutsEPNS0_12AudioOutInfoEi", "audio output dev
 }
 static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *param, void *lr) {
     static _Atomic int nopen;
+    static pthread_once_t timebase_once = PTHREAD_ONCE_INIT;
+    pthread_once(&timebase_once, audio_clock_init);
     int ch = *(const uint16_t *)(param + 4); int rate = *(const int32_t *)param;
     if (!ch) ch = 2;
     if (rate && rate != RATE) die("AudioOut sample rate %d not supported (48 kHz only)", rate);
@@ -321,7 +380,11 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
     int ok = qt - qh < QMAX;
-    if (ok) { a->q[qt & (QMAX - 1)] = b; atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release); }
+    if (ok) {
+        a->q[qt & (QMAX - 1)] = b;
+        a->enqueue_ns[qt & (QMAX - 1)] = now_ns();
+        atomic_store_explicit(&a->q_tail, qt + 1, memory_order_release);
+    }
     pthread_mutex_unlock(&a->m);
     return ok;      // bool: false when the queue is full (the real device has a limit too)
 }

@@ -485,6 +485,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             _vertexOutput = vertexContext._program.GetIoUsage();
         }
 
+        public void SetFullVertexOutputMapForGeometryAsCompute()
+        {
+            _vertexOutput = new IoUsage(FeatureFlags.RtLayer, 0xff, -1);
+        }
+
         public ShaderProgram GenerateVertexPassthroughForCompute()
         {
             AttributeUsage attributeUsage = new AttributeUsage(GpuAccessor);

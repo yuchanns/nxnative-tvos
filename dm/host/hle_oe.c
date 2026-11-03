@@ -2,6 +2,7 @@
 // oe::Initialize is in hle_sdkinit.c, not here.
 // Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (default en-US).
 #include "hle.h"
+#include "render_config.h"
 
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
 #include <stdatomic.h>
@@ -68,10 +69,17 @@ void dm_focus_set(int st) {
 }
 static int opmode(void) { return dm_opmode(); }
 
+// The self-controller's idle extension is queryable even without an am service.
+// Values match AppletIdleTimeDetectionExtension: none, extended, extended unsafe.
+static _Atomic int g_inactivity_extension;
+HLE_FORCE("_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb", "idle detection extension; keep the requested state without a system service", void, h_oe_InactivityExt, unsigned on) { g_inactivity_extension = (on & 0xff) ? 1 : 0; }
+HLE_FORCE("_ZN2nn2oe43GetUserInactivityDetectionTimeExtensionModeEv", "idle detection extension mode; query the host-owned state", int, h_oe_InactivityMode, void) { return g_inactivity_extension; }
 // Screenshot / video recording switches: the host has no system screenshot service, no-op
 HLE_FORCE("_ZN2nn2oe17FinishStartupLogoEv", "dismiss the system boot screen (through the am application proxy); the host has no boot screen", void, h_oe_FinishLogo, void) {}   // Metroid Dread calls it at main+0xadfed0
-HLE_FORCE("_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", "auto screen-off time on inactivity (through am); the host does not turn the screen off", void, h_oe_InactivityExt, int on) { (void)on; }
+HLE_FORCE("_ZN2nn2oe44SetUserInactivityDetectionTimeExtendedUnsafeEb", "unsafe idle detection extension; keep the requested state without a system service", void, h_oe_InactivityUnsafe, unsigned on) { g_inactivity_extension = (on & 0xff) ? 2 : 0; }
 HLE_FORCE("_ZN2nn2oe15EnableRecordingEv", "video recording switch; the host has no system recording", void, h_oe_EnableRec, void) {}
+// Album capture notifications use the ordinary oe queue; no capture service produces them here.
+HLE_FORCE("_ZN2nn2oe33EnableAlbumImageTakenNotificationEv", "album capture notifications; the host has no system screenshot service", void, h_oe_EnableAlbumNtf, void) {}
 // Applet resource user ID (ARUID, the number am assigns to this process): the host has no am, and the SDK's own getter returns 0. SDK 20's OpenAudioRenderer (the CPU rendering + manual execution path, sdk+0x221730)
 //   aborts when it gets 0 (The Legend of Zelda: Breath of the Wild 1.9.0); SDK 16 did not check. Report a fixed non-zero ID, used only as an identifier
 HLE_FORCE("_ZN2nn6applet23GetAppletResourceUserIdEv", "applet resource user ID; the host returns a fixed non-zero value", uint64_t, h_applet_Aruid, void) { return 0x80; }
@@ -91,7 +99,7 @@ HLE_FORCE("_ZN2nn2oe17DisableScreenShotEv", "screenshot switch; the host has no 
 HLE_FORCE("_ZN2nn2oe23BeginBlockingHomeButtonEv", "temporarily block the HOME button (through am); the host has no HOME button", void, h_oe_BlockHome, void) {}
 HLE_FORCE("_ZN2nn2oe21EndBlockingHomeButtonEv", "restore the HOME button (through am)", void, h_oe_UnblockHome, void) {}
 HLE_FORCE("_ZN2nn2oe29SetScreenShotImageOrientationENS_5album16ImageOrientationE", "screenshot orientation (through am); the host has no system screenshot", void, h_oe_ShotOrient, int o) { (void)o; }
-HLE_FORCE("_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", "whether auto screen-off on inactivity is extended; the host does not turn the screen off, reports no", unsigned, h_oe_InactivityExtQ, void) { return 0; }
+HLE_FORCE("_ZN2nn2oe37IsUserInactivityDetectionTimeExtendedEv", "whether idle detection is extended; query the host-owned state", unsigned, h_oe_InactivityExtQ, void) { return g_inactivity_extension != 0; }
 // Hyrule Warriors: Age of Calamity (SDK 9.6.0, main+0x8d1238): the copyright frame buffer, an overlay the system draws only into screenshots and recordings. The SDK hands the buffer to am as transfer memory
 // (svcCreateTransferMemory, then a null applet proxy). The host has no system capture, so it keeps nothing
 HLE_FORCE("_ZN2nn2oe30InitializeCopyrightFrameBufferEPvm", "copyright overlay buffer (for screenshots / recording, through am); the host has no system screenshot", void, h_oe_CopyrightInit, void *buf, size_t n) { (void)buf; (void)n; }
@@ -107,8 +115,12 @@ HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as th
 // SDK 11 calls of Monster Hunter Rise: the CPU overclock query reads an apm session the host never opened (null read in sdk+0x35258 at the start of nnMain, main+0x6bc8650);
 // the default display resolution is the TV's (1080p docked) or the panel's (720p handheld) and only changes with the operation mode
 HLE_FORCE("_ZN2nn2oe21IsCpuOverclockEnabledEv", "CPU overclock state (through apm): not enabled", unsigned, h_oe_CpuOc, void) { return 0; }
-HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld", void, h_oe_DefRes, int *w, int *h) {
-    int con = opmode() == 1; if (w) *w = con ? 1920 : 1280; if (h) *h = con ? 1080 : 720;
+HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: configured framebuffer or the operation mode's default", void, h_oe_DefRes, int *w, int *h) {
+    int con = opmode() == 1;
+    uint32_t size[2] = {con ? 1920 : 1280, con ? 1080 : 720};
+    const char *requested = getenv("DM_RENDER_SIZE");
+    if (requested && !dm_render_size_parse(requested, size)) die("invalid DM_RENDER_SIZE=%s", requested);
+    if (w) *w = (int)size[0]; if (h) *h = (int)size[1];
 }
 HLE_FORCE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", "default display resolution change event: bound, never signaled (the operation mode notification carries the change)",
           void, h_oe_DefResEv, void *ev) { hle_bind_system_event(ev, 0); }

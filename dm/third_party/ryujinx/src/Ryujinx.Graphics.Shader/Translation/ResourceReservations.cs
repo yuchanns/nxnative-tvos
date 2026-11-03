@@ -34,6 +34,12 @@ namespace Ryujinx.Graphics.Shader.Translation
         private readonly Dictionary<IoDefinition, int> _offsets;
         internal IReadOnlyDictionary<IoDefinition, int> Offsets => _offsets;
 
+        public IEnumerable<(string Storage, string Variable, int Location, int Component, int Offset)> GetIoOffsets()
+        {
+            foreach (var (io, offset) in _offsets)
+                yield return (io.StorageKind.ToString(), io.IoVariable.ToString(), io.Location, io.Component, offset);
+        }
+
         internal ResourceReservations(bool isTransformFeedbackEmulated, bool vertexAsCompute)
         {
             // All stages reserves the first constant buffer binding for the support buffer.

@@ -51,6 +51,6 @@ def variant(msl, bindings, om_only_ok=False):
     body = body.replace('    main0_out out = {};\n', '    main0_out out = {};\n' + decl, 1)
     for t, n, c in outs: body = body.replace(f'out.{n}', f'spv_o_{n}')
     put = ''.join(f'    if (OM_{j}_{k}) out.{n}_at{k} = spv_o_{n};\n' for j, (t, n, c) in enumerate(outs) for k in range(NFB))
-    if body.count('    return out;\n') < 1: return None, 'return out not found'
-    body = body.replace('    return out;\n', put + '    return out;\n')
+    if not re.search(r'\breturn\s+out\s*;', body): return None, 'return out not found'
+    body = re.sub(r'\breturn\s+out\s*;', lambda m: '{\n' + put + m.group(0) + '\n}', body)
     return body, {'calls': calls, 'mixed_regs': mixed, 'outputs': [{'color': c, 'type': t} for t, n, c in outs]}

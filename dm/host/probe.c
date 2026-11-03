@@ -10,13 +10,17 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <errno.h>
+#include <limits.h>
+#include <math.h>
+#include <stdatomic.h>
 void crash_set_trap_hook(int (*fn)(ucontext_t *uc));
 #if !TARGET_OS_IPHONE
 // Syntax module:offset[@x0 offset]. Put a brk at the guest address; on hit print x0..x3 (and the readable strings they point to) and a backtrace, then execute the original instruction from a trampoline slot and jump back.
 // The trampoline borrows x16: place probes only at function entries or at points where x16 is dead; the original instruction must not be PC-relative (adr/adrp/b/bl/ldr literal/cbz...).
 #define MAX_PROBE 16
 typedef void (*probe_fn)(ucontext_t *uc);
-static struct { uint64_t at; uint32_t *slot; unsigned hits; char name[40]; long dump; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];
+static struct { uint64_t at; uint32_t *slot; _Atomic unsigned hits, printed; char name[40]; long dump; probe_fn fn; int freg; long foff; uint64_t fval; int hreg; } g_probe[MAX_PROBE];
 
 // !xN: treat xN as a sead::ExpHeap and print its free and used blocks (SMBW layout: free list +0xb0, node offset +0xc4; used list +0xc8, node offset +0xdc; block size at block +0x18)
 static int rd64(uint64_t a, uint64_t *v) { vm_size_t g = 0; return !vm_read_overwrite(mach_task_self(), a, 8, (vm_address_t)v, &g) && g == 8; }
@@ -37,7 +41,15 @@ static void probe_heapwalk(uint64_t h) {
         fprintf(stderr, "\n[dm]   %s %d blocks %#llx bytes\n", L[k].nm, n, (unsigned long long)sum);
     }
 }   // dump: on hit print 16 bytes at [x0+dump] (-1 = do not print); fn: dedicated handler (replaces the default print)
-static int g_nprobe;
+static int g_nprobe, g_probe_simd;
+static unsigned g_probe_every = 1, g_probe_limit;
+static double g_probe_after;
+static unsigned probe_count(const char *name, unsigned fallback, unsigned minimum) {
+    const char *value = getenv(name); if (!value) return fallback;
+    char *end; errno = 0; unsigned long count = strtoul(value, &end, 10);
+    if (!*value || *end || errno || count < minimum || count > UINT_MAX) die("%s must be an integer from %u to %u", name, minimum, UINT_MAX);
+    return (unsigned)count;
+}
 static void probe_str(uint64_t p) {
     char buf[80]; vm_size_t got = 0;
     if (p < 0x1000 || vm_read_overwrite(mach_task_self(), p, sizeof buf - 1, (vm_address_t)buf, &got) || !got) return;
@@ -75,10 +87,23 @@ static int probe_hit(ucontext_t *uc) {   // Registered by probe_install with the
             if (g_probe[i].foff >= 0 && vm_read_overwrite(mach_task_self(), v + g_probe[i].foff, 8, (vm_address_t)&v, &g)) v = ~g_probe[i].fval;
             if (v != g_probe[i].fval) { uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1; }
         }
-        { extern uint64_t g_t0_ns; uint64_t now_ns(void); uint32_t thr_cur_handle(void); fprintf(stderr, "[dm] PROBE %s #%u [%.4fs] T=%x", g_probe[i].name, ++g_probe[i].hits, (now_ns() - g_t0_ns) / 1e9, thr_cur_handle()); }
+        extern uint64_t g_t0_ns; uint64_t now_ns(void); uint32_t thr_cur_handle(void);
+        unsigned hit = atomic_fetch_add_explicit(&g_probe[i].hits, 1, memory_order_relaxed) + 1;
+        if ((g_probe_limit && atomic_load_explicit(&g_probe[i].printed, memory_order_relaxed) >= g_probe_limit) || (hit - 1) % g_probe_every) {
+            uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1;
+        }
+        double seconds = (now_ns() - g_t0_ns) / 1e9;
+        if (seconds < g_probe_after) { uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1; }
+        unsigned printed = atomic_fetch_add_explicit(&g_probe[i].printed, 1, memory_order_relaxed);
+        if (g_probe_limit && printed >= g_probe_limit) { uc->uc_mcontext->__ss.__pc = (uint64_t)g_probe[i].slot; return 1; }
+        fprintf(stderr, "[dm] PROBE %s #%u [%.4fs] T=%x", g_probe[i].name, hit, seconds, thr_cur_handle());
         for (int r = 0; r < 8; r++) { uint64_t v = uc->uc_mcontext->__ss.__x[r]; fprintf(stderr, " x%d=%#llx", r, v); probe_str(v); }
         for (int r = 19; r < 24; r++) fprintf(stderr, " x%d=%#llx", r, uc->uc_mcontext->__ss.__x[r]);
         if (getenv("DM_PROBE_ALL")) for (int r = 9; r < 19; r++) fprintf(stderr, " x%d=%#llx", r, uc->uc_mcontext->__ss.__x[r]);   // also print x9–x18
+        if (g_probe_simd) for (int r = 0; r < 16; r++) {
+            float value; memcpy(&value, &uc->uc_mcontext->__ns.__v[r], sizeof value);
+            fprintf(stderr, " s%d=%g", r, (double)value);
+        }
         fprintf(stderr, " lr=%#llx", uc->uc_mcontext->__ss.__lr);
         { uint64_t x8 = uc->uc_mcontext->__ss.__x[8]; Dl_info di; fprintf(stderr, " x8=%#llx", x8);   // x8: indirect call targets are often here (probe placed before blr x8)
           if (dladdr((void *)x8, &di) && di.dli_sname) fprintf(stderr, " (%s+%#lx)", di.dli_sname, (unsigned long)(x8 - (uint64_t)di.dli_saddr)); }
@@ -127,8 +152,17 @@ static void probe_add(module_t *m, uint64_t off, long dump, probe_fn fn) {
 void probe_install(void) {
 #if !TARGET_OS_IPHONE
     crash_set_trap_hook(probe_hit);
+    g_probe_simd = getenv("DM_PROBE_SIMD") != NULL;
     const char *e = getenv("DM_PROBE");
     if (e) {
+        g_probe_every = probe_count("DM_PROBE_EVERY", 1, 1);
+        g_probe_limit = probe_count("DM_PROBE_LIMIT", 0, 0);
+        const char *after = getenv("DM_PROBE_AFTER");
+        if (after) {
+            char *end; errno = 0; g_probe_after = strtod(after, &end);
+            if (!*after || *end || errno || !isfinite(g_probe_after) || g_probe_after < 0) die("DM_PROBE_AFTER must be nonnegative finite seconds");
+        }
+        LOG("probe sampling: after %.3f s, every %u matching hits, printed limit %u per probe (0 is unlimited)", g_probe_after, g_probe_every, g_probe_limit);
         char spec[512]; strlcpy(spec, e, sizeof spec);
         for (char *t = strtok(spec, ","); t; t = strtok(NULL, ",")) {
             char *c = strchr(t, ':'); if (!c) die("DM_PROBE format: module:offset");
@@ -158,5 +192,14 @@ void probe_install(void) {
         }
     }
     if (g_slots && !g_slots_sealed) { mprotect(g_slots, 0x4000, PROT_READ | PROT_EXEC); sys_icache_invalidate(g_slots, 0x4000); g_slots_sealed = 1; }
+#endif
+}
+
+void probe_report(void) {
+#if !TARGET_OS_IPHONE
+    for (int i = 0; i < g_nprobe; i++)
+        LOG("probe summary %s: matching hits %u, printed %u", g_probe[i].name,
+            atomic_load_explicit(&g_probe[i].hits, memory_order_relaxed),
+            atomic_load_explicit(&g_probe[i].printed, memory_order_relaxed));
 #endif
 }

@@ -9,27 +9,46 @@ endif
 GAME_DIR = ../../games/$(GAME)
 GAME_H = ../../host/gen/$(GAME)/game_profile.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function -I../nvn/include -I$(dir $(GAME_H)) -I$(GAME_DIR)
-GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m)))
-GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) $(GAME_H) $(GAME_DIR)/dmsh_chain.h
+ASTC_LIB=../../host/gen/astc/libastcenc.a
+GFX=$(filter-out ../nvn/hle_nvn.c,$(sort $(wildcard ../nvn/*.c ../nvn/*.m ../nvn/*.S ../tex/*.c ../tex/*.m ../tex/*.mm))) nvn_test_stubs.c $(ASTC_LIB)
+$(ASTC_LIB): $(wildcard ../../third_party/astc-encoder/*.cpp ../../third_party/astc-encoder/*.h)
+	$(MAKE) -C ../../host GAME=$(GAME) gen/astc/libastcenc.a
+GFX_H=$(wildcard ../nvn/*.h ../nvn/*.inc ../nvn/include/*.h ../tex/*.h) ../../third_party/bcdec/bcdec.h $(GAME_H) $(GAME_DIR)/dmsh_chain.h
 .DEFAULT_GOAL := t_nvn   # the profile header rule comes first, so keep the default goal as before
 $(GAME_H):
 	$(MAKE) -C ../../host game_profile GAME=$(GAME)
-FW=-framework Metal -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
+FW=-lc++ -framework Metal -framework Foundation -framework QuartzCore -framework ImageIO -framework CoreGraphics -framework UniformTypeIdentifiers
 # Host crash.c is linked in as well: the write-protect unit tests go through the same page-fault hook as production
 t_nvn: t_nvn.c ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(FW)
 t_dirty_slots: t_dirty_slots.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_slots.c ../../host/crash.c ../nvn/nvn_dirty.c
+t_bcdec: t_bcdec.c ../tex/nvn_bcdec.c ../tex/nvn_bcdec.h ../../third_party/bcdec/bcdec.h
+	clang $(CFLAGS) -o $@ t_bcdec.c ../tex/nvn_bcdec.c
+t_bc_region: t_bc_region.c ../tex/nvn_bc_region.h ../tex/nvn_bcdec.c ../tex/nvn_bcdec.h
+	clang $(CFLAGS) -fsanitize=address,undefined -o $@ t_bc_region.c ../tex/nvn_bcdec.c
+t_astc_cache: t_astc_cache.m ../tex/nvn_astc_cache.m ../tex/nvn_astc_cache.h ../tex/nvn_bcdec.c ../tex/nvn_astc.mm $(ASTC_LIB)
+	clang $(CFLAGS) -fobjc-arc -fsanitize=address,undefined -o $@ t_astc_cache.m ../tex/nvn_bcdec.c ../tex/nvn_astc.mm $(ASTC_LIB) -lc++ -framework Foundation
 t_dirty_race: t_dirty_race.c ../nvn/nvn_dirty.c ../../host/crash.c ../nvn/nvn_dirty.h
 	clang $(CFLAGS) -o $@ t_dirty_race.c ../../host/crash.c
 t_builtin: t_builtin.m ../nvn/nvn_builtin.h
 	clang -O1 -g -Wall -fobjc-arc -o $@ t_builtin.m -framework Metal -framework Foundation
 t_deswz_gpu: t_deswz_gpu.m ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle_gpu.m ../tex/nvn_deswizzle.h ../tex/nvn_deswizzle_gpu.h ../nvn/nvn_tex.c ../nvn/nvn_tex.h
 	clang $(CFLAGS) -fobjc-arc -o $@ t_deswz_gpu.m ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle_gpu.m ../nvn/nvn_tex.c -framework Metal -framework Foundation
+t_deswz_region: t_deswz_region.c ../tex/nvn_deswizzle.c ../tex/nvn_deswizzle.h ../nvn/nvn_tex.c ../nvn/nvn_tex.h
+	clang $(CFLAGS) -fsanitize=address,undefined -o $@ t_deswz_region.c ../tex/nvn_deswizzle.c ../nvn/nvn_tex.c
 t_refl: t_refl.m ../nvn/nvn_refl.m ../nvn/nvn_refl.h $(GAME_DIR)/dmsh_chain.h
 	clang -O1 -g -Wall -I$(GAME_DIR) -fobjc-arc -o $@ t_refl.m ../nvn/nvn_refl.m -framework Metal -framework Foundation
+t_geometry_indices: t_geometry_indices.c ../nvn/nvn_geometry_indices.h ../nvn/nvn_geometry_topology.h
+	clang -O1 -g -Wall -fsanitize=address,undefined -o $@ t_geometry_indices.c
 t_hmap: t_hmap.c ../nvn/nvn_hmap.h
 	clang -O1 -Wall -o $@ t_hmap.c
+t_resource_usage: t_resource_usage.c ../nvn/nvn_resource_usage.h
+	clang -O1 -g -Wall -fsanitize=address,undefined -o $@ t_resource_usage.c
+t_asset_retention: t_asset_retention.c ../nvn/nvn_asset_retention.h
+	clang -O1 -g -Wall -fsanitize=address,undefined -o $@ t_asset_retention.c
+t_memory_backing: t_memory_backing.c ../nvn/nvn_memory_backing.h
+	clang -O1 -g -Wall -fsanitize=address,undefined -o $@ t_memory_backing.c
 t_cover: t_cover.c ../nvn/nvn_cover.h
 	clang -O1 -Wall -o $@ t_cover.c
 t_pace: t_pace.c ../nvn/nvn_pace.h
@@ -38,8 +57,8 @@ t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
 t_fuse_check: t_fuse_check.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fuse_check.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
-t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
-	clang $(CFLAGS) -fobjc-arc -o $@ t_present_crop.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_present_crop.m ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 t_reorder_chain: t_reorder_chain.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_reorder_chain.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_defer_chain: t_defer_chain.m ../../host/crash.c $(GFX) $(GFX_H)
@@ -52,8 +71,26 @@ t_ub: t_ub.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_ub.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_vbuf: t_vbuf.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_vbuf.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
-t_mip_extent: t_mip_extent.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
-	clang $(CFLAGS) -fobjc-arc -o $@ t_mip_extent.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+gen/tf_shader.h: test_tf.py ../tools/dmsh_build.py
+	python3 test_tf.py --header $@
+gen/geometry_shader.h: test_geometry.py ../tools/dmsh_geometry.py
+	python3 test_geometry.py --header $@
+gen/fragment_outputs.h: test_fragment_outputs.py ../tools/dmsh_outputs.py ../tools/dmsh_fetch.py
+	python3 test_fragment_outputs.py --header $@
+gen/legacy_samplers.h: test_legacy_samplers.py ../tools/dmsh_legacy.py
+	python3 test_legacy_samplers.py --header $@
+gen/legacy_borders.h: test_legacy_borders.py ../tools/dmsh_border.py ../tools/dmsh_legacy.py
+	python3 test_legacy_borders.py --header $@
+t_fragment_outputs: t_fragment_outputs.m gen/fragment_outputs.h ../../host/crash.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_fragment_outputs.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
+t_metal3: t_metal3.m argument_encoding_test.inc border_sampling_test.inc visibility_batch_test.inc discard_batch_test.inc discard_inline_test.inc render_pass_batch_test.inc gen/tf_shader.h gen/geometry_shader.h gen/legacy_samplers.h gen/legacy_borders.h ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_metal3.m ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_bc_upload: t_bc_upload.m astc_upload_test.inc ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_bc_upload.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_mip_extent: t_mip_extent.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_mip_extent.m ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
+t_stencil_mode: t_stencil_mode.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c $(GFX) $(GFX_H)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_stencil_mode.m ../../host/crash.c ../../host/hle_bigstack.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 t_rt_range_shape: t_rt_range_shape.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rt_range_shape.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_rt_range_ro: t_rt_range_ro.m ../../host/crash.c $(GFX) $(GFX_H)
@@ -66,12 +103,23 @@ t_pso_skey: t_pso_skey.m ../nvn/nvn_pso_skey.h ../nvn/nvn_obj.h
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_skey.m -framework Foundation
 t_pfv: t_pfv.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_pfv.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
-run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_mip_extent t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv
+run: t_geometry_indices t_resource_usage t_nvn t_bcdec t_astc_cache t_bc_upload t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_deswz_region t_pace t_fstep t_refl t_hmap t_cover t_fuse_check t_present_crop t_reorder_chain t_defer_chain t_zskip t_xv t_ub t_vbuf t_metal3 t_fragment_outputs t_mip_extent t_stencil_mode t_rt_range_shape t_rt_range_ro t_rt_range t_rt_depth_ro t_pso_skey t_pfv
+	./t_geometry_indices
+	./t_resource_usage
+	./t_asset_retention
+	./t_memory_backing
 	./t_nvn
+	./t_bcdec
+	./t_astc_cache
+	./t_astc_cache budget
+	./t_astc_cache mapped
+	./t_astc_cache mapped-memcpy
+	MTL_DEBUG_LAYER=1 ./t_bc_upload
 	./t_dirty_slots
 	./t_dirty_race
 	./t_builtin
 	./t_deswz_gpu
+	./t_deswz_region
 	./t_pace
 	./t_fstep
 	./t_refl
@@ -86,8 +134,19 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	./t_ub
 	MTL_DEBUG_LAYER=1 ./t_vbuf
 	DM_NVN_VBUF_CACHE=0 MTL_DEBUG_LAYER=1 ./t_vbuf
+	MTL_DEBUG_LAYER=1 ./t_metal3
+	MTL_DEBUG_LAYER=1 ./t_fragment_outputs
+	python3 test_fragment_outputs.py
+	python3 test_uniform_guards.py
+	python3 test_tf.py
+	python3 test_geometry.py
+	python3 test_shader_pairs.py
+	python3 test_storage_reflection.py
+	python3 test_subgroup.py
 	MTL_DEBUG_LAYER=1 ./t_mip_extent
 	MTL_DEBUG_LAYER=1 ./t_mip_extent --stencil-only
+	MTL_DEBUG_LAYER=1 ./t_stencil_mode
+	MTL_DEBUG_LAYER=1 ./t_stencil_mode --depth24
 	./t_rt_depth_ro
 	./t_rt_range_shape
 	./t_rt_range_ro
@@ -99,4 +158,7 @@ run: t_nvn t_dirty_slots t_dirty_race t_builtin t_deswz_gpu t_pace t_fstep t_ref
 	./t_pso_skey
 	MTL_DEBUG_LAYER=1 ./t_pfv
 	python3 test_tbdr_budget.py
-.PHONY: run
+run: t_memory_backing t_asset_retention test_image_usage
+test_image_usage:
+	python3 test_image_usage.py
+.PHONY: run test_image_usage

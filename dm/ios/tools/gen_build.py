@@ -11,17 +11,18 @@ cmd = subprocess.run(['make', '-s', '-n', '-B', '-C', host, 'dmhost'], capture_o
 # The host's own link command (-o dmhost) first, then the per-file compile commands of the libraries it depends on (libvpx): header paths keep this order, so the host's headers are found first
 lines = [shlex.split(l) for l in cmd.splitlines() if l.lstrip().startswith('clang')]
 lines.sort(key=lambda t: 'dmhost' not in t)
-srcs, incs, defs, fws = [], [], [], []
+srcs, incs, defs, fws, libs = [], [], [], [], []
 for toks in lines:
     i = 0
     while i < len(toks):
         t = toks[i]
         if t == '-framework': fws.append(toks[i + 1]); i += 2; continue
+        if t == '-lc++': libs.append(t)
         if t.startswith('-I'):
             d = os.path.normpath(os.path.join(host, t[2:]))
             if d not in incs: incs.append(d)
         elif t.startswith('-D'): defs.append(t)
-        elif t.endswith(('.c', '.m', '.S')): srcs.append(os.path.normpath(os.path.join(host, t)))
+        elif t.endswith(('.c', '.m', '.mm', '.cpp', '.S')): srcs.append(os.path.normpath(os.path.join(host, t)))
         i += 1
 assert srcs, 'no source files in the compile command'
 dup = sorted({s for s in srcs if srcs.count(s) > 1})
@@ -39,4 +40,6 @@ for s in srcs:
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
+print('CLANG_CXX_LANGUAGE_STANDARD = c++14')
+print('OTHER_CPLUSPLUSFLAGS = $(inherited) $(OTHER_CFLAGS) -ffp-contract=off')
+print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa') + ' ' + ' '.join(sorted(set(libs))))

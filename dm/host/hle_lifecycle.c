@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <unistd.h>
 void hlecount_flush(void);
+void probe_report(void);
 void dm_host_shutdown(const char *why) {
     static _Atomic int once; if (atomic_exchange(&once, 1)) return;
     uint64_t t0 = now_ns(); LOG("received %s: graceful exit", why);
@@ -15,6 +16,7 @@ void dm_host_shutdown(const char *why) {
     hlecount_flush();                               // DM_HLECOUNT: _exit does not run atexit, write a copy here
     dm_audio_suspend(1);
     dm_gfx_suspend(1);
+    probe_report();
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);
     _exit(0);
 }

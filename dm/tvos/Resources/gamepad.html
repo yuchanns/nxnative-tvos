@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="{{TITLE}}">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="{{BACKGROUND}}">
+  <link rel="manifest" href="/controller.webmanifest">
+  <link rel="apple-touch-icon" href="/controller-icon.png">
+  <title>{{TITLE}}</title>
+  <style>
+    :root { color-scheme: dark; --gold: #c7ab75; --ivory: #eee9dc; --ink: #171b1d; --safe-left: env(safe-area-inset-left, 0px); --safe-right: env(safe-area-inset-right, 0px); --safe-bottom: env(safe-area-inset-bottom, 0px); }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
+    body { position: fixed; inset: 0; background: #101416; color: var(--ivory); font: 15px -apple-system, BlinkMacSystemFont, sans-serif; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    button { font: inherit; color: var(--ivory); touch-action: none; cursor: pointer; border: 1px solid #77766b; background: linear-gradient(150deg, #424849, #24292b 50%, #1a1f21); box-shadow: inset 0 1px 1px #ffffff35, inset 0 -3px 2px #0008, 0 5px 7px #0009; }
+    button.pressed { color: #172f2b; background: linear-gradient(150deg, #c3f3d8, #7cceb5); border-color: #d3ffe9; box-shadow: inset 0 3px 5px #145e4c80, 0 0 14px #6ce7bd77; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #a4e3cb; outline-offset: 4px; }
+    #surface { position: absolute; inset: 0; overflow: hidden; border-radius: 24px; background: url('/controller-skin.jpg') center / 100% 100% no-repeat, #22282b; }
+    header { position: absolute; top: max(12px, env(safe-area-inset-top)); left: calc(var(--safe-left) + 24px); right: calc(var(--safe-right) + 24px); display: flex; justify-content: space-between; align-items: center; gap: 12px; z-index: 2; }
+    .brand { color: var(--ivory); font: 15px Georgia, serif; letter-spacing: .3em; }
+    .brand small { display: block; margin-top: 5px; color: #b7af9d; font: 7px -apple-system, sans-serif; letter-spacing: .24em; }
+    .connection { display: flex; align-items: center; gap: 8px; }
+    .signal { width: 5px; height: 5px; border-radius: 50%; background: #7f817d; }
+    body[data-connected="true"] .signal { background: #97ddbd; box-shadow: 0 0 8px #82d8b277; }
+    #status { color: #cbc9bc; font: 10px ui-monospace, monospace; }
+    #cloud-save { display: block; margin-top: 4px; color: #b7af9d; font: 9px -apple-system, sans-serif; text-align: right; }
+    #awake-status { display: block; color: var(--gold); font-size: 9px; text-align: right; }
+    #awake-status:empty { display: none; }
+    #open-settings { position: relative; width: 44px; height: 44px; padding: 0; flex-shrink: 0; border-radius: 50%; }
+    #open-settings svg { position: absolute; top: 50%; left: 50%; width: 28px; height: 28px; transform: translate(-50%, -50%); fill: currentColor; pointer-events: none; }
+    #settings { position: absolute; inset: 0; z-index: 7; display: grid; place-items: center; padding: 16px; background: #08080bcc; }
+    #settings[hidden] { display: none; }
+    #settings h1 { font-size: 24px; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; min-height: 56px; font-size: 16px; }
+    .setting-row input { width: 28px; height: 28px; accent-color: var(--gold); touch-action: manipulation; }
+    #settings-message { min-height: 18px; margin: 8px 0; font-size: 12px; }
+    #close-settings { min-width: 88px; min-height: 44px; margin-top: 4px; }
+    #settings{padding:8px}#settings .card{width:480px;padding:14px 24px}#settings h1{font:600 22px -apple-system,sans-serif;letter-spacing:0;margin:0 0 8px}#settings .setting-row{min-height:44px;font-size:15px;gap:12px}#settings .setting-row input{width:24px;height:24px}#settings-message{line-height:16px;min-height:16px;margin:6px 0;font-size:11px;color:#dedee3}#close-settings{margin-top:0;min-height:44px}.position-field{border:0;padding:0;margin:8px 0 0}.position-field legend{font-size:12px;color:#b9b9c3;padding:0;margin-bottom:6px}.position-options{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.position-choice{position:relative;display:block;cursor:pointer}.position-choice input{position:absolute;top:5px;right:5px;width:13px;height:13px;margin:0;accent-color:var(--gold)}.position-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;height:60px;border:1px solid #60616d;border-radius:7px;color:#b8b9c3;background:#15151be0;font-size:10px}.position-card svg{width:31px;height:22px}.position-choice input:checked+.position-card{color:#fff;border-color:var(--gold);background:#ffffff0a}.position-choice input:focus-visible+.position-card{outline:2px solid white;outline-offset:2px}
+@media(max-height:360px){#settings .card{padding:10px 20px}#settings h1{font-size:20px;margin-bottom:4px}.position-field{margin-top:4px}.position-field legend{margin-bottom:4px}.position-card{height:52px}#settings-message{margin:2px 0}}
+    #disconnect { width: 44px; height: 44px; font-size: 21px; border-radius: 50%; box-shadow: inset 0 1px 1px #ffffff20; border-color: #818075; color: #e4d9bd; background: #252b2ddd; margin-left: 5px; }
+    .control-layout { position: absolute; inset: 76px calc(var(--safe-right) + 16px) max(14px, var(--safe-bottom)) calc(var(--safe-left) + 16px); display: grid; grid-template-columns: minmax(0, 1fr) 52px minmax(0, 1fr); gap: 12px; }
+    .bank { display: grid; grid-template-rows: clamp(44px, 12vh, 56px) minmax(0, 1fr); gap: clamp(12px, 4vh, 20px); min-width: 0; }
+    .shoulders { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .shoulders button { border-radius: 9px 9px 19px 19px; border-color: #aa946a; font-size: 18px; letter-spacing: .1em; }
+    .bank-controls { min-height: 0; display: grid; grid-template-columns: minmax(112px, 1fr) minmax(144px, 1.15fr); gap: 14px; align-items: center; }
+    .stick-unit { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; }
+    .left-unit { align-self: start; }
+    .right-unit { align-self: end; }
+    .stick { position: relative; width: min(40vh, 100%); aspect-ratio: 1; border-radius: 50%; border: 1px solid #101518; background: radial-gradient(circle, #10191b 0 55%, #1d282a 56% 68%, #b59d6b 69% 70%, #1a2527 71% 75%, #63655c 76%); box-shadow: 0 0 0 3px #111719aa, 0 5px 9px #000b, inset 0 3px 8px #000a; }
+    .stick::before { content: ''; position: absolute; inset: 10%; border: 1px solid #8c967d44; border-radius: 50%; pointer-events: none; }
+    .knob { position: absolute; left: 50%; top: 50%; width: 62%; height: 62%; border-radius: 50%; border: 1px solid #797e77; background: radial-gradient(circle at 40% 25%, #535d5b, #303a3a 45%, #1d2829 78%); box-shadow: 0 7px 10px #000b, inset 0 2px 3px #c0c7b94d; transform: translate(-50%, -50%); pointer-events: none; }
+    .knob::before { content: ''; position: absolute; inset: 7%; border: 3px double #111c1a9c; border-radius: 50%; box-shadow: inset 0 1px 2px #9ba89955; }
+    .knob::after { content: ''; position: absolute; inset: 18%; border-radius: 50%; background: radial-gradient(ellipse at 50% 40%, #52615a, #2c3b35); box-shadow: inset 0 1px 3px #14231d; }
+    .stick.active { box-shadow: 0 0 0 2px #adcea0, 0 0 16px #84e5bb44, inset 0 3px 8px #000a; }
+    .stick-click { min-width: 64px; height: 44px; border-radius: 13px; color: #d6c49e; border-color: #8c7f61; font: 14px ui-monospace, monospace; letter-spacing: .08em; }
+    #dpad { width: min(max(132px, 40vh), 100%); aspect-ratio: 1; display: grid; grid-template: repeat(3, 1fr) / repeat(3, 1fr); align-self: center; filter: drop-shadow(0 4px 3px #000b); }
+    #dpad span { display: grid; place-items: center; background: linear-gradient(145deg, #424847, #262d2f); color: #ded9c8; font-size: 13px; border: 1px solid #666b61; }
+    #dpad span.pressed { color: #244436; background: #a3dfc1; }
+    #dpad .up { grid-area: 1 / 2; border-radius: 6px 6px 0 0; border-bottom: 0; }
+    #dpad .left { grid-area: 2 / 1; border-radius: 6px 0 0 6px; border-right: 0; }
+    #dpad .center { grid-area: 2 / 2; border: 0; background: radial-gradient(circle, #788271 0 5%, #303a37 8% 24%, #202c28 27% 29%, #323b37 32%); }
+    #dpad .right { grid-area: 2 / 3; border-radius: 0 6px 6px 0; border-left: 0; }
+    #dpad .down { grid-area: 3 / 2; border-radius: 0 0 6px 6px; border-top: 0; }
+    .face { position: relative; width: min(46vh, 100%); aspect-ratio: 1; align-self: start; }
+    .face button { position: absolute; width: 36%; height: 36%; border-radius: 50%; font-size: clamp(17px, 5vh, 25px); font-weight: 400; border-color: #8d9488; text-shadow: 0 1px 2px #000; }
+    .face .x { left: 32%; top: 0; } .face .a { right: 0; top: 32%; }
+    .face .b { left: 32%; bottom: 0; } .face .y { left: 0; top: 32%; }
+    .center-console { display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 12px; padding-bottom: 12px; }
+    .center-console small { color: #c3b38d; font-size: 7px; letter-spacing: .24em; white-space: nowrap; }
+    .menu { display: flex; flex-direction: column; justify-content: center; gap: 16px; }
+    .menu button { flex: 0 0 48px; width: 48px; height: 48px; border-radius: 50%; font-size: 19px; line-height: 22px; }
+    #gate { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 18px; background: #0c1517c9; backdrop-filter: blur(5px); }
+    #gate[hidden] { display: none; }
+    .card { width: min(520px, 90vw); padding: 26px 32px; border: 1px solid #a99469; border-radius: 17px; background: radial-gradient(ellipse at 100% 0%, #5a583433, transparent 60%), #1c2426f5; box-shadow: inset 0 0 0 5px #252d2d, 0 16px 50px #0009; }
+    .eyebrow { color: #bbaa82; font-size: 9px; letter-spacing: .2em; margin-bottom: 9px; }
+    h1 { font: 29px Georgia, serif; letter-spacing: .02em; margin: 0 0 12px; color: #e8e0cb; }
+    #message { color: #bfc7bf; font-size: 13px; line-height: 1.5; margin: 0 0 16px; }
+    #connect { padding: 11px 31px; border-radius: 20px; border-color: #d0bf91; background: linear-gradient(135deg, #dbcea5, #b3a06c); color: #202923; font-size: 13px; box-shadow: inset 0 1px 1px #fffa, 0 4px 9px #0006; }
+    #connect:disabled { opacity: .5; }
+    .save-hint { display: block; margin-top: 14px; color: #b4ab92; font-size: 10px; line-height: 1.5; }
+    #pairing-field { margin-bottom: 14px; }
+    #pairing-field label { display: block; font-size: 11px; color: #c9c8b8; margin-bottom: 5px; }
+    #pairing { display: block; width: 100%; border: 1px solid #7d805f; border-radius: 6px; background: #10191b; color: #dcece2; padding: 9px; font: 16px -apple-system, sans-serif; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; touch-action: manipulation; }
+    #rotate { display: none; position: absolute; inset: 0; z-index: 6; place-items: center; background: radial-gradient(ellipse at center, #303b35, #101a1a 75%); text-align: center; padding: 30px; }
+    #rotate .turn-icon { width: 100px; height: 52px; border: 2px solid #c4b17d; border-radius: 10px; margin: 0 auto 32px; transform: rotate(-20deg); box-shadow: 0 0 0 7px #bda87815; }
+    #rotate p { color: #aebeb1; font-size: 13px; line-height: 1.7; }
+    @media (orientation: portrait) { #rotate { display: grid; } }
+    @media (max-height: 360px) { .brand small { display: none; } .control-layout { top: 64px; bottom: max(10px, var(--safe-bottom)); } .bank { gap: 12px; } .stick { width: min(35vh, 100%); } .stick-unit { gap: 8px; } .card { padding: 18px 25px; } h1 { font-size: 23px; } }
+    .center-console small { display: none; }
+    @media (max-width: 740px) and (orientation: landscape) { .control-layout { left: calc(var(--safe-left) + 10px); right: calc(var(--safe-right) + 10px); gap: 8px; } .shoulders { gap: 10px; } .bank-controls { gap: 10px; } }
+    @media (max-width: 640px) and (orientation: landscape) {
+      .control-layout { left: calc(var(--safe-left) + 8px); right: calc(var(--safe-right) + 8px); grid-template-columns: minmax(0, 1fr) 44px minmax(0, 1fr); gap: 6px; }
+      .bank-controls { grid-template-columns: minmax(100px, 1fr) minmax(132px, 1.15fr); gap: 8px; }
+      .menu button { width: 44px; height: 44px; flex-basis: 44px; }
+    }
+  </style>
+  <link rel="stylesheet" href="/controller-theme.css">
+</head>
+<body>
+  <main id="surface" aria-label="Game controller">
+    <header><div class="brand">{{BRAND}}<small>{{SUBTITLE}}</small></div><div class="connection"><span class="signal"></span><div><span id="status">Not connected</span><span id="cloud-save" aria-live="polite"></span><span id="awake-status" aria-live="polite"></span></div><button id="open-settings" aria-label="TV display settings" hidden><svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M13.20 5.57L13.40 1.23L18.60 1.23L18.80 5.57L21.40 6.65L24.60 3.71L28.29 7.40L25.35 10.60L26.43 13.20L30.77 13.40L30.77 18.60L26.43 18.80L25.35 21.40L28.29 24.60L24.60 28.29L21.40 25.35L18.80 26.43L18.60 30.77L13.40 30.77L13.20 26.43L10.60 25.35L7.40 28.29L3.71 24.60L6.65 21.40L5.57 18.80L1.23 18.60L1.23 13.40L5.57 13.20L6.65 10.60L3.71 7.40L7.40 3.71L10.60 6.65Z M16 10.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></svg></button><button id="disconnect" aria-label="Disconnect" hidden>&#9211;</button></div></header>
+    <div class="control-layout">
+      <section class="bank left-bank" aria-label="Left controls">
+        <div class="shoulders"><button data-bit="8">ZL</button><button data-bit="6">L</button></div>
+        <div class="bank-controls">
+          <div class="stick-unit left-unit"><div class="stick" id="left-stick" aria-label="Left stick"><div class="knob"></div></div><button class="stick-click" id="left-click" data-bit="4">L3</button></div>
+          <div id="dpad" aria-label="Directional pad"><span class="up" data-dir="13">&#9650;</span><span class="left" data-dir="12">&#9664;</span><span class="center"></span><span class="right" data-dir="14">&#9654;</span><span class="down" data-dir="15">&#9660;</span></div>
+        </div>
+      </section>
+      <div class="center-console"><small>{{MOTTO}}</small><div class="menu"><button data-bit="11" aria-label="Minus">&#8722;</button><button data-bit="10" aria-label="Plus">+</button></div></div>
+      <section class="bank right-bank" aria-label="Right controls">
+        <div class="shoulders"><button data-bit="7">R</button><button data-bit="9">ZR</button></div>
+        <div class="bank-controls">
+          <div class="stick-unit right-unit"><div class="stick" id="right-stick" aria-label="Right stick"><div class="knob"></div></div><button class="stick-click" id="right-click" data-bit="5">R3</button></div>
+          <div class="face"><button class="x" data-bit="2">X</button><button class="a" data-bit="0">A</button><button class="b" data-bit="1">B</button><button class="y" data-bit="3">Y</button></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <section id="settings" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden><div class="card"><h1 id="settings-title">TV display</h1><label class="setting-row" for="show-fps">Performance overlay<input id="show-fps" type="checkbox" disabled></label><label class="setting-row" for="show-cloud-save">Cloud save notices<input id="show-cloud-save" type="checkbox" disabled></label><fieldset class="position-field"><legend>Overlay position</legend><div class="position-options"><label class="position-choice"><input type="radio" disabled name="hud-position" value="top-left" checked><span class="position-card"><svg viewBox="0 0 36 25" aria-hidden="true"><rect x="1" y="1" width="34" height="23" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="4" width="8" height="6" rx="1" fill="currentColor"/></svg><span>Top left</span></span></label><label class="position-choice"><input type="radio" disabled name="hud-position" value="top-right"><span class="position-card"><svg viewBox="0 0 36 25" aria-hidden="true"><rect x="1" y="1" width="34" height="23" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="24" y="4" width="8" height="6" rx="1" fill="currentColor"/></svg><span>Top right</span></span></label><label class="position-choice"><input type="radio" disabled name="hud-position" value="bottom-left"><span class="position-card"><svg viewBox="0 0 36 25" aria-hidden="true"><rect x="1" y="1" width="34" height="23" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="4" y="15" width="8" height="6" rx="1" fill="currentColor"/></svg><span>Bottom left</span></span></label><label class="position-choice"><input type="radio" disabled name="hud-position" value="bottom-right"><span class="position-card"><svg viewBox="0 0 36 25" aria-hidden="true"><rect x="1" y="1" width="34" height="23" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="24" y="15" width="8" height="6" rx="1" fill="currentColor"/></svg><span>Bottom right</span></span></label></div></fieldset><p id="settings-message" aria-live="polite"></p><button id="close-settings">Done</button></div></section>
+  <section id="gate"><div class="card"><div class="eyebrow">{{EYEBROW}}</div><h1>{{WELCOME}}</h1><p id="message">Open the game on Apple TV, then connect.</p><div id="pairing-field" hidden><label for="pairing">Controller link</label><input id="pairing" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the full controller link"></div><button id="connect">Connect to Apple TV</button><small class="save-hint">Save the full controller link in Safari for quick access.</small></div></section>
+  <div id="rotate"><div><div class="turn-icon"></div><h1>{{ROTATE}}</h1><p>Rotate your iPhone sideways.<br>Your controller will be ready in landscape.</p></div></div>
+  <script>
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const pairingKey = 'nx-pad-token';
+    function parsePairing(value) {
+      value = value.trim();
+      if (/^[0-9a-f]{32,128}$/.test(value)) return value;
+      try {
+        const fragment = new URL(value).hash.slice(1);
+        return /^[0-9a-f]{32,128}$/.test(fragment) ? fragment : '';
+      } catch (_) { return ''; }
+    }
+    function savedPairing(storage) {
+      try { return parsePairing(window[storage].getItem(pairingKey) || ''); }
+      catch (_) { return ''; }
+    }
+    let token = parsePairing(location.hash.slice(1)) || savedPairing('localStorage') || savedPairing('sessionStorage');
+    function rememberPairing(value) {
+      token = value;
+      let persistent = false;
+      try { localStorage.setItem(pairingKey, token); persistent = true; } catch (_) {}
+      try { sessionStorage.setItem(pairingKey, token); } catch (_) {}
+      // Keep the fragment for bookmarks and browser-to-Safari handoff.
+      try { history.replaceState(null, '', location.pathname + location.search + '#' + token); } catch (_) {}
+      document.querySelector('.save-hint').textContent = persistent
+        ? 'Pairing saved on this iPhone. Safari Share > Add to Home Screen keeps your controller one tap away.'
+        : 'Keep the full link: Safari Share > Add to Home Screen. Browser storage is unavailable.';
+    }
+    if (token) rememberPairing(token);
+    else {
+      $('pairing-field').hidden = false;
+      $('message').textContent = 'Paste your controller link once to pair this iPhone.';
+    }
+    const buttons = new Map();
+    const sticks = [{element: $('left-stick'), pointer: null, x: 0, y: 0}, {element: $('right-stick'), pointer: null, x: 0, y: 0}];
+    const requests = new Set();
+    let connected = false, client = '', generation = 0, sequence = 0;
+    let busy = false, dirty = false, pending = 0, held = 0, dpadBits = 0, dpadPointer = null;
+    let lastSent = 0, lastStatus = 0;
+    let displaySequence = 0, displayBusy = false, displayDirty = false, displayPreferences = null;
+
+    let awakeGeneration = 0, awakeWanted = false, awakeLock = null, awakeVideo = null, awakePending = false;
+    // The HTTP controller cannot use the secure-context Wake Lock API on iPhone.
+    // The silent clip fallback is from NoSleep.js, commit 1d15cc88dd8c1b62fe5b5f910c6ff7396b280d68.
+    /*
+The MIT License (MIT)
+
+Copyright (c) Rich Tibbett
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+    */
+    const awakeClip = 'data:video/mp4;base64,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';
+    function stopKeepingAwake() {
+      awakeWanted = false; awakePending = false; awakeGeneration++;
+      const lock = awakeLock; awakeLock = null;
+      if (lock) lock.release().catch(() => {});
+      if (awakeVideo) awakeVideo.pause();
+      $('awake-status').textContent = '';
+    }
+    async function keepScreenAwake() {
+      if (document.hidden || awakePending || awakeLock || (awakeVideo && !awakeVideo.paused)) return;
+      awakeWanted = true; awakePending = true;
+      const current = ++awakeGeneration;
+      try {
+        if (navigator.wakeLock) {
+          try {
+            const lock = await navigator.wakeLock.request('screen');
+            if (current !== awakeGeneration) { await lock.release(); return; }
+            awakeLock = lock;
+            lock.addEventListener('release', () => {
+              if (awakeLock !== lock) return;
+              awakeLock = null;
+              if (awakeWanted && !document.hidden) $('awake-status').textContent = 'Tap a control to keep screen awake';
+            });
+            $('awake-status').textContent = '';
+            return;
+          } catch (_) {
+            if (current !== awakeGeneration) return;
+          }
+        }
+        if (!awakeVideo) {
+          awakeVideo = document.createElement('video');
+          awakeVideo.setAttribute('playsinline', '');
+          awakeVideo.setAttribute('webkit-playsinline', '');
+          awakeVideo.setAttribute('disablepictureinpicture', '');
+          awakeVideo.src = awakeClip;
+          awakeVideo.addEventListener('timeupdate', () => {
+            if (awakeVideo.currentTime > .5) awakeVideo.currentTime = 0;
+          });
+          awakeVideo.addEventListener('pause', () => {
+            if (awakeWanted && !document.hidden) $('awake-status').textContent = 'Tap a control to keep screen awake';
+          });
+        }
+        await awakeVideo.play();
+        if (current === awakeGeneration) $('awake-status').textContent = '';
+      } catch (_) {
+        if (current === awakeGeneration) $('awake-status').textContent = 'Keep awake unavailable. Check Auto-Lock.';
+      } finally {
+        if (current === awakeGeneration) awakePending = false;
+      }
+    }
+    document.addEventListener('pointerdown', () => {
+      if (connected && awakeWanted) keepScreenAwake();
+    });
+
+    function randomClient() {
+      return Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+    }
+    async function post(route, data) {
+      const controller = new AbortController();
+      requests.add(controller);
+      const timeout = setTimeout(() => controller.abort(), 700);
+      try {
+        const response = await fetch(route, {method: 'POST', cache: 'no-store', signal: controller.signal,
+          headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token}, body: JSON.stringify(data)});
+        if (!response.ok) {
+          if (response.status === 401) $('pairing-field').hidden = false;
+          const messages = {401: 'Pairing was not accepted. Paste your full controller link below.', 409: 'This controller session ended. Tap Connect to take control.', 423: 'Open the game on Apple TV, then reconnect.'};
+          throw new Error(messages[response.status] || 'The controller could not connect. Try again.');
+        }
+      } finally { clearTimeout(timeout); requests.delete(controller); }
+    }
+    function refreshButtons() {
+      let next = dpadBits;
+      for (const bit of buttons.values()) next |= 1 << bit;
+      pending |= next & ~held;
+      held = next;
+      for (const button of document.querySelectorAll('[data-bit]')) button.classList.toggle('pressed', !!(held & (1 << Number(button.dataset.bit))));
+      for (const arrow of document.querySelectorAll('[data-dir]')) arrow.classList.toggle('pressed', !!(held & (1 << Number(arrow.dataset.dir))));
+      dirty = true; pump();
+    }
+    function clearControls() {
+      buttons.clear(); dpadPointer = null; dpadBits = 0; held = 0; pending = 0;
+      for (const stick of sticks) {
+        stick.pointer = null; stick.x = 0; stick.y = 0; stick.element.classList.remove('active');
+        stick.element.querySelector('.knob').style.transform = 'translate(-50%, -50%)';
+      }
+      for (const element of document.querySelectorAll('.pressed')) element.classList.remove('pressed');
+    }
+    function stop(message) {
+      const previous = client;
+      connected = false; client = ''; generation++; busy = false;
+      stopKeepingAwake();
+      displayBusy = false; displayDirty = false;
+      $('settings').hidden = true; $('open-settings').hidden = true;
+      document.body.dataset.connected = 'false';
+      for (const request of requests) request.abort();
+      clearControls();
+      $('status').textContent = 'Not connected'; $('disconnect').hidden = true;
+      $('message').textContent = message; $('gate').hidden = false; $('connect').disabled = false;
+      if (previous) fetch('/release', {method: 'POST', keepalive: true,
+        headers: {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token},
+        body: JSON.stringify({client: previous})}).catch(() => {});
+    }
+    async function pump() {
+      const now = performance.now();
+      if (!connected || busy || document.hidden || now - lastSent < 16 || (!dirty && now - lastSent < 100)) return;
+      const current = generation;
+      const taps = pending; pending = 0; dirty = false; busy = true; lastSent = now;
+      const data = {client, seq: ++sequence, buttons: held | taps,
+        lx: sticks[0].x, ly: sticks[0].y, rx: sticks[1].x, ry: sticks[1].y};
+      // A quick tap must be delivered even if it ended while a request was in flight.
+      if (taps & ~held) dirty = true;
+      try {
+        await post('/state', data);
+        if (current === generation && now - lastStatus > 1000) {
+          $('status').textContent = 'Connected · ' + Math.round(performance.now() - now) + ' ms';
+          lastStatus = now;
+        }
+      } catch (error) {
+        if (current === generation) stop(error.name === 'AbortError' || error instanceof TypeError ? 'Connection lost. Check Wi-Fi, then reconnect.' : error.message);
+      } finally {
+        if (current === generation) { busy = false; if (dirty) queueMicrotask(pump); }
+      }
+    }
+    $('connect').addEventListener('click', async () => {
+      const pasted = $('pairing').value.trim();
+      const pairing = pasted ? parsePairing(pasted) : token;
+      if (!pairing) {
+        $('pairing-field').hidden = false;
+        $('message').textContent = 'Paste the complete controller link, including the part after #.'; return;
+      }
+      rememberPairing(pairing);
+      $('pairing').blur();
+      clearControls(); client = randomClient(); sequence = 0; busy = false;
+      displaySequence = 0; displayPreferences = null;
+      $('show-fps').disabled = true; $('show-cloud-save').disabled = true;
+      for (const radio of document.querySelectorAll('input[name="hud-position"]')) radio.disabled = true;
+      const current = ++generation;
+      $('connect').disabled = true; $('message').textContent = 'Connecting to Apple TV...';
+      // Start inside the tap handler, before the network await consumes activation.
+      keepScreenAwake();
+      try {
+        await post('/connect', {client});
+        if (current !== generation) return;
+        connected = true; dirty = true; $('gate').hidden = true; $('disconnect').hidden = false;
+        $('open-settings').hidden = false;
+        document.body.dataset.connected = 'true';
+        $('pairing-field').hidden = true; $('pairing').value = '';
+        $('status').textContent = 'Connected'; pump();
+        updateCloudSave();
+      } catch (error) {
+        if (current === generation) stop(error.name === 'AbortError' || error instanceof TypeError ? 'Apple TV is not reachable. Open the game and check Wi-Fi.' : error.message);
+      } finally { if (current === generation) $('connect').disabled = false; }
+    });
+    $('disconnect').addEventListener('click', () => stop('Disconnected. Tap Connect when you are ready.'));
+    function showDisplayPreferences(preferences) {
+      $('show-fps').checked = preferences.fps;
+      $('show-cloud-save').checked = preferences.cloud_save;
+      $('show-fps').disabled = false; $('show-cloud-save').disabled = false;
+      for (const radio of document.querySelectorAll('input[name="hud-position"]')) {
+        radio.checked = radio.value === (preferences.position || 'top-left'); radio.disabled = false;
+      }
+    }
+    $('open-settings').addEventListener('click', () => {
+      clearControls(); dirty = true; pump();
+      $('settings-message').textContent = displayPreferences ? '' : 'Loading display settings...';
+      $('settings').hidden = false;
+      updateCloudSave();
+    });
+    $('close-settings').addEventListener('click', () => { $('settings').hidden = true; });
+    async function saveDisplayPreferences() {
+      displayDirty = true;
+      if (!connected || displayBusy) return;
+      displayBusy = true;
+      const current = generation;
+      try {
+        while (displayDirty && current === generation) {
+          displayDirty = false;
+          const preferences = {fps: $('show-fps').checked, cloud_save: $('show-cloud-save').checked,
+            position: document.querySelector('input[name="hud-position"]:checked').value, seq: ++displaySequence};
+          $('settings-message').textContent = 'Saving...';
+          await post('/display', {client, ...preferences});
+          if (current !== generation) return;
+          displayPreferences = preferences;
+        }
+        $('settings-message').textContent = 'Saved on Apple TV';
+      } catch (error) {
+        if (current === generation) {
+          displayDirty = false;
+          if (displayPreferences) showDisplayPreferences(displayPreferences);
+          $('settings-message').textContent = 'Could not save. Please try again.';
+        }
+      } finally {
+        if (current === generation) displayBusy = false;
+      }
+    }
+    for (const control of document.querySelectorAll('#show-fps, #show-cloud-save, input[name="hud-position"]'))
+      control.addEventListener('change', saveDisplayPreferences);
+    for (const button of document.querySelectorAll('[data-bit]')) {
+      button.addEventListener('pointerdown', event => {
+        event.preventDefault(); if (!connected) return;
+        button.setPointerCapture(event.pointerId); buttons.set(event.pointerId, Number(button.dataset.bit)); refreshButtons();
+      });
+      const release = event => { if (buttons.delete(event.pointerId)) refreshButtons(); };
+      for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) button.addEventListener(name, release);
+    }
+    function moveStick(stick, event) {
+      const dx = event.clientX - stick.originX, dy = event.clientY - stick.originY;
+      const distance = Math.hypot(dx, dy);
+      // A pixel of touch jitter is enough; a percentage dead zone compounds the game's own.
+      const amount = Math.min(1, Math.max(0, (distance - 1) / (stick.radius - 1)));
+      const x = distance ? dx / distance * amount : 0;
+      const y = distance ? dy / distance * amount : 0;
+      stick.element.querySelector('.knob').style.transform = `translate(-50%, -50%) translate(${x * stick.travel}px, ${y * stick.travel}px)`;
+      stick.x = Math.round(x * 32767); stick.y = Math.round(-y * 32767);
+      dirty = true; pump();
+    }
+    for (const stick of sticks) {
+      stick.element.addEventListener('pointerdown', event => {
+        event.preventDefault(); if (!connected || stick.pointer !== null) return;
+        const box = stick.element.getBoundingClientRect();
+        // Each touch starts at neutral, even when the thumb lands off-center.
+        stick.originX = event.clientX; stick.originY = event.clientY;
+        stick.radius = Math.max(48, Math.min(box.width, box.height) * .45);
+        stick.travel = Math.max(0, (box.width - stick.element.querySelector('.knob').offsetWidth) / 2 - 2);
+        stick.pointer = event.pointerId; stick.element.classList.add('active'); stick.element.setPointerCapture(event.pointerId); moveStick(stick, event);
+      });
+      stick.element.addEventListener('pointermove', event => { if (stick.pointer === event.pointerId) moveStick(stick, event); });
+      const release = event => {
+        if (stick.pointer !== event.pointerId) return;
+        stick.pointer = null; stick.x = 0; stick.y = 0; stick.element.classList.remove('active');
+        stick.element.querySelector('.knob').style.transform = 'translate(-50%, -50%)'; dirty = true; pump();
+      };
+      for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) stick.element.addEventListener(name, release);
+    }
+    function moveDpad(event) {
+      const box = $('dpad').getBoundingClientRect();
+      const x = (event.clientX - box.left) / box.width * 2 - 1, y = (event.clientY - box.top) / box.height * 2 - 1;
+      dpadBits = (x < -.3 ? 1 << 12 : x > .3 ? 1 << 14 : 0) | (y < -.3 ? 1 << 13 : y > .3 ? 1 << 15 : 0);
+      refreshButtons();
+    }
+    $('dpad').addEventListener('pointerdown', event => {
+      event.preventDefault(); if (!connected || dpadPointer !== null) return;
+      dpadPointer = event.pointerId; $('dpad').setPointerCapture(event.pointerId); moveDpad(event);
+    });
+    $('dpad').addEventListener('pointermove', event => { if (dpadPointer === event.pointerId) moveDpad(event); });
+    for (const name of ['pointerup', 'pointercancel', 'lostpointercapture']) $('dpad').addEventListener(name, event => {
+      if (dpadPointer !== event.pointerId) return;
+      dpadPointer = null; dpadBits = 0; refreshButtons();
+    });
+    document.addEventListener('contextmenu', event => { if (event.target !== $('pairing')) event.preventDefault(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stop('Controller paused. Tap Connect to resume.'); });
+    window.addEventListener('pagehide', () => stop('Controller paused.'));
+    window.addEventListener('blur', () => { if (connected) stop('Controller paused. Tap Connect to resume.'); });
+    window.addEventListener('orientationchange', () => { if (connected) stop('Orientation changed. Tap Connect to resume.'); });
+    setInterval(pump, 16);
+    let checkingSave = false;
+    async function updateCloudSave() {
+      if (!token || document.hidden || checkingSave) return;
+      checkingSave = true;
+      const current = generation;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      try {
+        const response = await fetch('/status', {cache: 'no-store', signal: controller.signal, headers: {'Authorization': 'Bearer ' + token}});
+        if (!response.ok) return;
+        const status = await response.json();
+        if (current !== generation) return;
+        const save = status.cloud_save;
+        $('cloud-save').textContent = save && save.state !== 'disabled' ? save.message : '';
+        if (connected && status.display && status.display.seq >= displaySequence && !displayBusy && !displayDirty) {
+          displayPreferences = status.display;
+          showDisplayPreferences(displayPreferences);
+          if (!$('settings').hidden) $('settings-message').textContent = '';
+        }
+      } catch (_) {
+        if (current === generation) {
+          $('cloud-save').textContent = 'Save status unavailable';
+          if (!$('settings').hidden) $('settings-message').textContent = 'Settings unavailable. Please try again.';
+        }
+      }
+      finally { clearTimeout(timeout); checkingSave = false; }
+    }
+    setInterval(updateCloudSave, 3000);
+  </script>
+</body>
+</html>

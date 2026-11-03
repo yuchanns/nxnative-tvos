@@ -312,7 +312,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
                 Instruction.Load,
                 StorageKind.ConstantBuffer,
                 vertexCount,
-                new[] { Const(vertexInfoCbBinding), Const((int)VertexInfoBufferField.VertexCounts), Const(0) }));
+                new[] { Const(vertexInfoCbBinding), Const((int)VertexInfoBufferField.GeometryCounts), Const(1) }));
 
             Operand vertexIndex = Local();
             node.List.AddBefore(node, new Operation(

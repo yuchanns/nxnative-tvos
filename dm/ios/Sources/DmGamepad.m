@@ -10,6 +10,7 @@
 //   Everything hugs the edges and corners to leave the picture room; controls sit over the picture, one CAShapeLayer each: a press only swaps the fill, a stick only moves its knob, nothing redraws the whole screen.
 //   Touches no control takes (in 3D, those outside the right third) go to the game's touch screen (pushGame; Super Mario Galaxy's pointer in handheld mode).
 //   The virtual gamepad (layout button included) hides while a physical controller is connected and comes back when it is removed; meanwhile every touch goes to the game. Physical controllers keep every button (D-pad and right stick included) and map by position: bottom = B, right = A, left = Y, top = X (same positions as on a Switch controller).
+#include <TargetConditionals.h>
 #import <UIKit/UIKit.h>
 #import <GameController/GameController.h>
 #import <CoreText/CoreText.h>
@@ -23,6 +24,9 @@ enum { C_NONE = 0, C_STICK, C_DPAD, C_FACE, C_BTN, C_SWAP, C_GAME };   // which 
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_touch_btn, g_pad_btn;
+#if TARGET_OS_TV
+static uint64_t g_remote_btn;
+#endif
 static int32_t g_touch_lx, g_touch_ly, g_touch_rx, g_touch_ry, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry;
 static int tilted(int32_t x, int32_t y) { return (int64_t)x * x + (int64_t)y * y > (int64_t)4000 * 4000; }
 static void publish(void) {
@@ -30,7 +34,17 @@ static void publish(void) {
     int32_t lx = g_touch_lx, ly = g_touch_ly, rx = g_touch_rx, ry = g_touch_ry;
     if (tilted(g_pad_lx, g_pad_ly)) { lx = g_pad_lx; ly = g_pad_ly; }   // a tilted physical stick wins
     if (tilted(g_pad_rx, g_pad_ry)) { rx = g_pad_rx; ry = g_pad_ry; }
+#if TARGET_OS_TV
+    if (!tilted(lx, ly)) {
+        lx = ((g_remote_btn & DM_BTN_RIGHT) != 0) * DM_STICK_MAX - ((g_remote_btn & DM_BTN_LEFT) != 0) * DM_STICK_MAX;
+        ly = ((g_remote_btn & DM_BTN_UP) != 0) * DM_STICK_MAX - ((g_remote_btn & DM_BTN_DOWN) != 0) * DM_STICK_MAX;
+    }
+    // Remote directions drive the stick; duplicating them as D-pad presses opens game shortcuts.
+    uint64_t remote_buttons = g_remote_btn & ~(uint64_t)(DM_BTN_LEFT | DM_BTN_UP | DM_BTN_RIGHT | DM_BTN_DOWN);
+    dm_input_set(g_touch_btn | g_pad_btn | remote_buttons, lx, ly, rx, ry);
+#else
     dm_input_set(g_touch_btn | g_pad_btn, lx, ly, rx, ry);
+#endif
     pthread_mutex_unlock(&g_mu);
 }
 
@@ -94,7 +108,10 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
 
 - (instancetype)initWithFrame:(CGRect)f {
     if ((self = [super initWithFrame:f])) {
-        self.multipleTouchEnabled = YES; self.opaque = NO; self.backgroundColor = UIColor.clearColor;
+#if !TARGET_OS_TV
+        self.multipleTouchEnabled = YES;
+#endif
+        self.opaque = NO; self.backgroundColor = UIColor.clearColor;
         _owner = [NSMapTable strongToStrongObjectsMapTable]; _faceOf = [NSMapTable strongToStrongObjectsMapTable];
         static dispatch_once_t once;
         dispatch_once(&once, ^{
@@ -385,12 +402,51 @@ static void read_pad(GCExtendedGamepad *g) {
         read_pad(c.extendedGamepad);
     }
     if (!any) { pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish(); }
-    dispatch_async(dispatch_get_main_queue(), ^{ self->_padOff = any; self->_controls.hidden = any; [self reset]; });
+    dispatch_async(dispatch_get_main_queue(), ^{
+#if TARGET_OS_TV
+        self->_padOff = YES; self->_controls.hidden = YES;
+#else
+        self->_padOff = any; self->_controls.hidden = any;
+#endif
+        [self reset];
+    });
 }
+#if TARGET_OS_TV
+- (BOOL)canBecomeFirstResponder { return YES; }
+- (BOOL)canBecomeFocused { return YES; }
+- (void)didMoveToWindow { [super didMoveToWindow]; if (self.window) [self becomeFirstResponder]; }
+static uint64_t remote_button(UIPressType type) {
+    switch (type) {
+    case UIPressTypeUpArrow: return DM_BTN_UP;
+    case UIPressTypeDownArrow: return DM_BTN_DOWN;
+    case UIPressTypeLeftArrow: return DM_BTN_LEFT;
+    case UIPressTypeRightArrow: return DM_BTN_RIGHT;
+    case UIPressTypeSelect: return DM_BTN_A;
+    case UIPressTypeMenu: return DM_BTN_B;
+    case UIPressTypePlayPause: return DM_BTN_PLUS;
+    default: return 0;
+    }
+}
+- (void)remotePresses:(NSSet<UIPress *> *)presses down:(BOOL)down {
+    pthread_mutex_lock(&g_mu);
+    for (UIPress *press in presses) {
+        uint64_t button = remote_button(press.type);
+        if (down) g_remote_btn |= button; else g_remote_btn &= ~button;
+    }
+    pthread_mutex_unlock(&g_mu); publish();
+}
+- (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { (void)event; [self remotePresses:presses down:YES]; }
+- (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { (void)event; [self remotePresses:presses down:NO]; }
+- (void)pressesCancelled:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event { (void)event; [self remotePresses:presses down:NO]; }
+#endif
 @end
 
 UIView *dm_gamepad_view(CGRect frame) { DmGamepad *v = [[DmGamepad alloc] initWithFrame:frame]; g_view = v; return v; }
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
     dispatch_async(dispatch_get_main_queue(), ^{ [g_view reset]; });
-    pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0; pthread_mutex_unlock(&g_mu); publish();
+    pthread_mutex_lock(&g_mu); g_pad_btn = 0; g_pad_lx = g_pad_ly = g_pad_rx = g_pad_ry = 0;
+#if TARGET_OS_TV
+    g_remote_btn = 0;
+#endif
+    pthread_mutex_unlock(&g_mu); publish();
 }

@@ -1,6 +1,7 @@
 // Bootstrap: after loading the modules, initialize the SDK runtime in the real order of nn::init::Start (sdk+0x2b0470) in the SDK, then enter nnMain.
 #include "dm.h"
 #include "front.h"
+#include "xc3_heap.h"
 #include <stdatomic.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
@@ -23,6 +24,7 @@ static void guest_main(void) {
     LOG(">>> nnosInitialize"); ((fn2)req("nnosInitialize"))(hmain, 0);
     ((fn0)req("_init_libc1"))();
     LOG(">>> nninitInitializeSdkModule"); ((fn0)req("nninitInitializeSdkModule"))();
+    if (getenv("DM_XC3_ALLOCATOR_PORT_SELF_TEST")) { xc3_heap_port_self_test(); _exit(0); }
     // The game arguments are in place before nninitStartup, as on hardware (nn::os takes them from the process argument area in nnosInitialize): Unreal Engine's nninitStartup
     // (Octopath Traveler 0, main+0x12afc) reads -SwitchVirtualAddressSpaceSize= and its other memory options there
     ((fnp)req("_ZN2nn2os11SetHostArgcEi"))((void *)(uint64_t)g_argc);
@@ -102,6 +104,7 @@ static void host_preload(int argc, char **argv) {
     if (g_flag.bootprof) LOG("① breakdown (after loading): probes / keys %.1f ms, stub report %.1f ms", (tb - ta) / 1e6, (now_ns() - tb) / 1e6);
     { void loader_hash_log(void); loader_hash_log(); }   // DM_LOADHASH=1: address-independent hash of the load result (loader.c)
     { void dm_ue_malloc_install(void); dm_ue_malloc_install(); }   // Unreal's allocator on a host malloc zone, for the builds whose constructor call is cut (hle_uemalloc.c)
+    xc3_heap_port_prepare();
 }
 static struct { int argc; char **argv; pthread_t th; _Atomic int started; } g_pre;
 static void *preload_thread(void *a) { (void)a; host_preload(g_pre.argc, g_pre.argv); return NULL; }

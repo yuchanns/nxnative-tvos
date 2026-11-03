@@ -13,7 +13,7 @@ import re
 import sys
 
 
-ACCESS = re.compile(r"\b[a-z]+_c1\)\._m0\[([^\]]+)\]")
+ACCESS = re.compile(r"\b[A-Za-z_]\w*_c1\)\._m0\[([^\]]+)\]")
 DEFINITION = re.compile(r"\b(u?int|u?short|u?long|bool)\s+(_\d+)\s*=\s*([^;]+);")
 ASSIGNMENT = re.compile(r"(?<![\w.])(_\d+)\s*(?:<<|>>|[-+*/%&|^])?=(?!=)|(?<![\w.])(_\d+)\s*(?:\+\+|--)|(?:\+\+|--)\s*(_\d+)\b")
 TOKEN = re.compile(r"\s*(0[xX][0-9a-fA-F]+[uU]?|\d+\.\d*(?:[eE][-+]?\d+)?f?|\d+[uU]?|[A-Za-z_]\w*(?:\.\w+)*|\.\w+|<<|>>|<=|>=|==|!=|&&|\|\||[-+*/%&|^~!?:(),<>\[\]])")
@@ -202,7 +202,7 @@ def main():
     version_dir, output = map(os.path.abspath, sys.argv[1:])
     keys = []
     for name in sorted(os.listdir(version_dir)):
-        if not name.endswith(".metal"):
+        if not name.endswith("_b.metal"):
             continue
         path = os.path.join(version_dir, name)
         with open(path, encoding="utf-8") as stream:
@@ -210,7 +210,7 @@ def main():
         accesses = set(ACCESS.findall(source))
         if not accesses:
             continue
-        key = name[:-len("_b.metal")] if name.endswith("_b.metal") else name[:-6]
+        key = name[:-len("_b.metal")]
         definitions = definitions_of(source)
         span = c1_span(os.path.join(version_dir, key + "_b.json"))
         if not all(proven(index, definitions, span) for index in accesses):

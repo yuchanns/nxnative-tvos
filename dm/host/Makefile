@@ -14,18 +14,33 @@ $(error no game profile $(GAME) (neither in dm/games nor in DM_GAMES_DIR))
 endif
 endif
 GAME_H = gen/$(GAME)/game_profile.h
-CFLAGS=-O1 -g -Wall -Wno-unused-function
+BUILD ?= debug
+ifeq ($(filter $(BUILD),debug release),)
+$(error BUILD must be debug or release)
+endif
+BUILD_CFLAGS_debug = -O1 -g
+BUILD_CFLAGS_release = -O3 -g -DNDEBUG
+CFLAGS=$(BUILD_CFLAGS_$(BUILD)) -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) front_mac.m entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex and dm/gfx/vk are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
-GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m))
-GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/include/*.h ../gfx/tex/*.h))
+GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/tex/*.mm ../gfx/vk/*.m))
+GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h)) ../third_party/bcdec/bcdec.h
 # Third party: libvpx ships only the VP9 decoder's sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
 VPX=../third_party/libvpx
 VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
 VPX_OBJ=$(patsubst $(VPX)/%.c,gen/vpx/%.o,$(VPX_SRC))
 VPX_LIB=gen/vpx/libvpx.a
+ASTC=../third_party/astc-encoder
+ASTC_SRC=$(sort $(wildcard $(ASTC)/astcenc_*.cpp))
+ASTC_OBJ=$(patsubst $(ASTC)/%.cpp,gen/astc/%.o,$(ASTC_SRC))
+ASTC_LIB=gen/astc/libastcenc.a
+gen/astc/%.o: $(ASTC)/%.cpp $(wildcard $(ASTC)/*.h)
+	@mkdir -p $(dir $@)
+	clang++ -O3 -g -DNDEBUG -std=c++14 -ffp-contract=off -DASTCENC_BLOCK_MAX_TEXELS=36 -c $< -o $@
+$(ASTC_LIB): $(ASTC_OBJ)
+	ar rcs $@ $^
 gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
 	@mkdir -p $(dir $@)
 	clang -O2 -g -I$(VPX) -I$(VPX)/config -c $< -o $@
@@ -41,7 +56,10 @@ $(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py FORCE
 GAME_STAMP = gen/game.stamp
 $(GAME_STAMP): FORCE
 	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || echo $(GAME) > $@
+BUILD_STAMP = gen/build.flags
+$(BUILD_STAMP): FORCE
+	@mkdir -p gen; printf '%s\n' '$(BUILD)' '$(CFLAGS)' | cmp -s - $@ || printf '%s\n' '$(BUILD)' '$(CFLAGS)' > $@
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
-	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h front.h guest_file_backing.h $(wildcard xc3*.h) $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(BUILD_STAMP) $(VPX_LIB) $(ASTC_LIB)
+	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(ASTC_LIB) -lc++ -framework Cocoa -framework QuartzCore -framework Metal -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers

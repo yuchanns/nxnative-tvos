@@ -23,12 +23,12 @@ static id<MTLRenderPipelineState> pipeline(void) {
     if (!ps) { fprintf(stderr, "%s\n", err.localizedDescription.UTF8String); abort(); }
     return ps;
 }
-static id<MTL4RenderCommandEncoder> encoder(id<MTLRenderPipelineState> ps) {
-    MTL4RenderPassDescriptor *d = [MTL4RenderPassDescriptor new];
+static id<MTLRenderCommandEncoder> encoder(id<MTLRenderPipelineState> ps) {
+    MTLRenderPassDescriptor *d = [MTLRenderPassDescriptor new];
     d.renderTargetWidth = d.renderTargetHeight = d.defaultRasterSampleCount = 1;
-    id<MTL4RenderCommandEncoder> en = enc_r_begin(d); enc_r_pso(en, ps); return en;
+    id<MTLRenderCommandEncoder> en = enc_r_begin(d); enc_r_pso(en, ps); return en;
 }
-static void capture(id<MTL4RenderCommandEncoder> en, id<MTLBuffer> out, unsigned row) {
+static void capture(id<MTLRenderCommandEncoder> en, id<MTLBuffer> out, unsigned row) {
     enc_r_vbuf(en, TF_SLOT, out.gpuAddress + row * 16); enc_r_draw(en, MTLPrimitiveTypePoint, 0, 1);
 }
 static void finish(void) {
@@ -44,7 +44,7 @@ int main(void) { @autoreleasepool {
     id<MTLBuffer> out = [g_dev newBufferWithLength:16 * 8 options:MTLResourceStorageModeShared]; res_add(out);
     state_reset(); S.vbuf[0].address = (uint64_t)mem; S.vbuf[14].address = (uint64_t)(mem + 1); S.vbuf[15].address = (uint64_t)(mem + 2);
     uint64_t other, off; void *mb; mtl_gpu_addr((uint64_t)(mem + 3), 1, &mb, &off, &other);
-    mtl_sub_begin(); id<MTL4RenderCommandEncoder> en = encoder(ps);
+    mtl_sub_begin(); id<MTLRenderCommandEncoder> en = encoder(ps);
     bind_vbufs(en); capture(en, out, 0);
     uint64_t resolves = g_vbuf_resolve, sets = g_vbuf_set;
     for (int i = 0; i < 1000; i++) bind_vbufs(en);

@@ -17,7 +17,7 @@ static void dummy_kind(NSString *t, uint8_t *tt, uint8_t *pf) {
     *pf = [t hasPrefix:@"depth"] ? NVN_DPF_DEPTH : [t containsString:@"<uint"] ? NVN_DPF_UINT : [t containsString:@"<int"] ? NVN_DPF_SINT : NVN_DPF_FLOAT;
 }
 
-// Whether a storage buffer binding may be written: route A's reflection says so ("rw"); route B's does not, and there SPIRV-Cross types a buffer the shader never writes as const device
+// Explicit write usage takes precedence; older reflection without it conservatively follows the device pointer type.
 static int sbuf_rw(NSDictionary *b) { id rw = b[@"rw"]; if (rw) return [rw boolValue]; id ty = b[@"msl_type"]; return !([ty isKindOfClass:[NSString class]] && [ty hasPrefix:@"const "]); }
 int nvn_refl_from_json(NSDictionary *j, nvn_refl *o, char *err, int errlen) {
     memset(o, 0, sizeof *o);

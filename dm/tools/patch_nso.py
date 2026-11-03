@@ -49,6 +49,28 @@ else:
 
 # ---- Registered cuts: {NSO build ID: [(offset, original bytes, new bytes, reason)]} ----
 CUTS = {
+  # Xenoblade Chronicles 3 2.2.0: replace the complete allocator interface with
+  # its bounded host implementation. The original 60 GiB policy is preserved
+  # as an input; reservations, physical commits and ownership remain separate.
+  # The ratio entry transfers the returned float bits from w0 to s0 because
+  # the SVC bridge restores the guest SIMD registers before returning.
+  '82d187fe9ef9be921b8e1b1cddf7bd28': [
+    (0x12407a0, 'fd7bbca9f70b00f9fd030091f65702a9', '011200d4c0035fd61f2003d51f2003d5', 'host allocator: initialize'),
+    (0x12409e0, 'fd7bbea9f44f01a9fd030091f34f00f0', '211200d4c0035fd61f2003d51f2003d5', 'host allocator: shutdown'),
+    (0x1240b00, 'e84f00f0e60305aae50304aae403032a', '411200d4c0035fd61f2003d51f2003d5', 'host allocator: allocate'),
+    (0x1240b30, 'ff0301d1fd7b03a9fdc30091e94f00f0', '611200d4c0035fd61f2003d51f2003d5', 'host allocator: free'),
+    (0x1240b80, 'e84f00f008212891090140f9080d40f9', '811200d4c0035fd61f2003d51f2003d5', 'host allocator: owns range'),
+    (0x1240bb0, 'ff4301d1fd7b04a9fd030191e94f00f0', 'a11200d4c0035fd61f2003d51f2003d5', 'host allocator: query info'),
+    (0x1240c00, 'ffc300d1fd7b02a9fd830091e94f00f0', 'c11200d4c0035fd61f2003d51f2003d5', 'host allocator: query owner'),
+    (0x1240c50, 'e84f00f0e10300aa00fd44f901000014', 'e11200d4c0035fd61f2003d51f2003d5', 'host allocator: snapshot'),
+    (0x1240e20, '0850009008811f9109a1009129fddfc8', '011300d40000271ec0035fd61f2003d5', 'host allocator: usage ratio'),
+  ],
+  # SDK 12.3.9: the same AddressRegionManager constructor as Engage's SDK below.
+  # Both the node-area limit and its occupied-region record must be reduced.
+  'e8cdceb1e77a8465fe20f21928e8d296': [
+    (0x346430, '08fca752', '087ca052', 'AddressRegionManager node area limit: 1022 MiB -> 62 MiB'),
+    (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager occupied node area: 1022 MiB -> 62 MiB'),
+  ],
   # Super Mario Bros. Wonder v0 main
   'cd6e42aee7934f4d8393cd43893ae25e': [
     # Resource heap slack: each resource unit's ExpHeap is created with the resource size table value + 0x1008 (main+0x1e603c → ExpHeap::create main+0x4aac38); the table holds Nintendo's measured peaks with almost no margin
@@ -813,11 +835,13 @@ for off, oid, ow, why in obs:
 # a late frame, so motion is even and game time = real time. The steps stay values the games' own logic uses (1 to 3). Age of Calamity's updates are not held by the presents:
 # its stubs run them at the cap, and the host only paces its presents (below).
 # State page = the page after the key page (zero in the file, read-write in both loaders): +0 float target fps written by the loader (fps_target, DM_FPS_TARGET; 0 = every stub
-# runs the original instructions), +4 TOTK movie flag, +8 double lead (TOTK, below), +0x10 float render scale (TOTK, below), +0x18 double game seconds (TOTK, below),
+# runs the original instructions), +4 TOTK movie flag, +8 double lead (TOTK, below), +0x10 float render scale (TOTK, below), +0x14 u32 fixed presentation pacing,
+# +0x18 double game seconds (TOTK, below),
 # +0x20 u32 step in vsyncs (host; 0 = not decided yet), +0x24 u32 a step the game fixes itself (BotW's VFR override; 0 = none), +0x28 u32 AoC's vsyncs per update, marked by
 # its first stub (0 = off), +0x30 u64 vsyncs stepped (the stubs; logged by the host to check the game's speed). Stub bodies assembled with clang
 FRAME_STEP = {'277178b7dba1b6d4949a84778d4abc58', 'cd57b23fa4bbad65803d9788c01821ee', 'c3cf52bf2b05d7310884971b50bcccb8'}
 FS_STATE_OFF = 0
+RENDER_SIZE_OFF = 0
 if BUILD_ID in FRAME_STEP and NAME == 'main':
     FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
     assert not FAR and FS_STATE_OFF % 0x1000 == 0 and FS_STATE_OFF + 0x40 <= PATCH_OFF and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
@@ -836,6 +860,68 @@ if BUILD_ID in FRAME_STEP and NAME == 'main':
 # ticks), clamped to [1 / cap, 1 / 15 s]; game time that ran ahead after a short frame (the "lead", at most 0.25 s; totk-mobile) is paid back by later frames. Prerendered movies set a 30 cap (flag set and cleared around main+0x2b36100 /
 # main+0x2b33918), the D-pad menu fade starts at full rate (FPSLocker's fix at main+0x1fbc80) and the swapchain argument at main+0xbe14a8 becomes 1 as in FPSLocker
 if FS_STATE_OFF and BUILD_ID == '277178b7dba1b6d4949a84778d4abc58':
+    # Framework construction copies config +0x14 into framebuffer dimensions +0x9c
+    # (main+0xbdc5b4). Both the viewport and swapchain use them before allocating
+    # textures (main+0xbe0338, +0xbe04bc, +0xbe14c8). Keep the original 1920x1080
+    # when unset; changing the allocation input preserves the game's size accounting.
+    RENDER_SIZE_OFF = FS_STATE_OFF + 0x38
+    fs_site(0xbdb588, '884201f8')
+    start = here(); emit(STP_PRE(16, 17, 31, -16)); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xf9401e11,   # ldr x17,[x16,#0x38]  packed width / height
+              0xb4000051,   # cbz x17,original (+8)
+              0xaa1103e8,   # mov x8,x17
+              0xa8c147f0,   # original: ldp x16,x17,[sp],#16
+              0xf8014288):  # stur x8,[x20,#0x14]
+        emit(w)
+    emit(B(here(), 0xbdb58c))
+    fs_put(0xbdb588, [B(0xbdb588, start)], 'framebuffer dimensions from host before viewport / texture allocation (zero = original)')
+    # The renderer has its own preferred output dimensions, separate from the
+    # framework's allocated framebuffer. Its setter marks the size dirty and
+    # classifies it, and the normal update propagates it to the output crop.
+    # Replace only the primary size argument; other indexed sizes stay intact.
+    fs_site(0x8c66ec, '08400091')
+    start = here(); emit(STP_PRE(16, 17, 31, -16)); emit(0x350000a2)  # cbnz w2,original (+20)
+    emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xf9401e11,   # ldr x17,[x16,#0x38]
+              0xb4000051,   # cbz x17,original (+8)
+              0x9100e201,   # add x1,x16,#0x38
+              0xa8c147f0,   # original: ldp x16,x17,[sp],#16
+              0x91004008):  # add x8,x0,#0x10
+        emit(w)
+    emit(B(here(), 0x8c66f0))
+    fs_put(0x8c66ec, [B(0x8c66ec, start)], 'primary renderer output size from host through the original setter')
+    # Config +0x0c selects a mode-table crop instead of the preferred size.
+    # A host size request selects the latter; zero retains the original flag.
+    fs_site(0x8c632c, '2a304039')
+    start = here(); emit(STP_PRE(16, 17, 31, -16)); emit(ADRP(16, here(), FS_STATE_OFF))
+    for w in (0xf9401e11,   # ldr x17,[x16,#0x38]
+              0x3940302a,   # ldrb w10,[x1,#0xc] (original)
+              0xb4000051,   # cbz x17,restore (+8)
+              0x2a1f03ea,   # mov w10,wzr
+              0xa8c147f0):  # restore: ldp x16,x17,[sp],#16
+        emit(w)
+    emit(B(here(), 0x8c6330))
+    fs_put(0x8c632c, [B(0x8c632c, start)], 'host output size selects preferred renderer dimensions instead of the mode table')
+    # DynamicTextureAllocator already grows and retires pools, but initialization
+    # reserves only one pointer slot. Larger render targets exhaust that pool;
+    # main+0x1c456c then returns a null allocation consumed at +0x1c2f20.
+    # Reserve bounded growth slots when the host requests dimensions. Only the
+    # pointer table grows here; the original allocator creates pools on demand
+    # from its configured heap and frees unused pools through main+0x2811e50.
+    render_pool_slots = 16
+    for off, orig, reg, original, expanded in (
+        (0x8cfddc, '01018052', 1, 8, render_pool_slots * 8),
+        (0x8cfdf0, '28008052', 8, 1, render_pool_slots),
+    ):
+        fs_site(off, orig)
+        start = here(); emit(STP_PRE(16, 17, 31, -16)); emit(ADRP(16, here(), FS_STATE_OFF))
+        emit(0xf9401e11)                         # ldr x17,[x16,#0x38]
+        emit(0x52800000 | (original << 5) | reg)  # mov wN,original
+        emit(0xb4000051)                         # cbz x17,restore (+8)
+        emit(0x52800000 | (expanded << 5) | reg)  # mov wN,expanded
+        emit(LDP_POST(16, 17, 31, 16))
+        emit(B(here(), off + 4))
+        fs_put(off, [B(off, start)], 'reserve dynamic texture pool growth slots for host render dimensions')
     # frame step (replaces ldrb w9,[x0,#0x58], the first instruction after the prologue)
     fs_site(0x2db18c, '09604139')
     start = here(); emit(ADRP(16, here(), FS_STATE_OFF))
@@ -1121,6 +1207,37 @@ if FS_STATE_OFF and BUILD_ID == 'c3cf52bf2b05d7310884971b50bcccb8':
     emit(B(here(), 0x166dc6c))
     fs_put(0x166dc60, [B(0x166dc60, start)], 'KIDS frame task: the frame-rate object\'s steps × its fps × vsyncs per update / 60 (state page target fps; 0 = as the game sets them)')
 
+# Xenoblade Chronicles 3 2.2.0: FPSLocker-Warehouse's matching build config.
+# The DR budget before multiplying by the vsync count is always 1/60 second
+# for both supported targets (30/60). Keep the ether effect's lifetime at its
+# original 1/30 second when the UI switches to a shorter frame interval.
+if BUILD_ID == '82d187fe9ef9be921b8e1b1cddf7bd28' and NAME == 'main':
+    def xc3_put(off, original, words, why):
+        old = bytes.fromhex(original)
+        assert IMG[off:off + len(old)] == old, f'XC3 timing original bytes mismatch {off:#x}'
+        assert len(old) == 4 * len(words)
+        for i, word in enumerate(words):
+            assert off + 4 * i not in kinds, f'XC3 timing site is a rewrite site {off + 4 * i:#x}'
+            assert not any(seg[0].address <= off + 4 * i < seg[-1].address + 4 for seg in windows), 'XC3 timing site in exclusive window'
+            struct.pack_into('<I', IMG, off + 4 * i, word)
+        cuts.append((off, original, bytes(IMG[off:off + len(old)]).hex(), why))
+        stat('xc3_timing')
+
+    literal = here(); emit(0x3c888889)  # float 1/60; naturally aligned to 4 bytes
+    xc3_put(0x124f518, '086540f900013fd6',
+            [ADRP(8, 0x124f518, literal), 0xbd400100 | ((literal & 0xfff) // 4 << 10)],
+            'dynamic resolution: 1/60 second budget per vsync (30/60 fps)')
+    start = here()
+    for word in (0xf9400015,  # ldr x21,[x0] (original instruction)
+                 0xb4000095,  # cbz x21,ret: preserve the original null case
+                 0x52911128,  # mov w8,#0x8889
+                 0x72a7a108,  # movk w8,#0x3d08,lsl #16
+                 0xb90216a8,  # str w8,[x21,#0x214]
+                 0xd65f03c0): # ret
+        emit(word)
+    xc3_put(0x67360, '150040f9', [B(0x67360, start) | 0x80000000],
+            'ether effect timer: retain 1/30 second lifetime above 30 fps')
+
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')
 if FAR:   # patch area before the base: file = text + ro + data (padded to 16K) + patch area
@@ -1140,6 +1257,7 @@ with open(P('fixups.tsv'), 'w') as f:
     if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')
     if FS_STATE_OFF: f.write(f'# FPS_STATE_OFF\t{FS_STATE_OFF:#x}\n')   # frame step state page (FRAME_STEP): the loader writes the target fps there
+    if RENDER_SIZE_OFF: f.write(f'# RENDER_SIZE_OFF\t{RENDER_SIZE_OFF:#x}\n')
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # the host identifies the build by it: features with hard-coded addresses only run on the build they belong to
 with open(P('gates.tsv'), 'w') as f:
     for ret, k, arg, orig in gates: f.write(f'{ret:#x}\t{k}\t{arg}\t{orig:#x}\n')

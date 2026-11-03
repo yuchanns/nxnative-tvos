@@ -2,6 +2,7 @@
 #include "../hle_audio.c"
 #include <sched.h>
 #include <time.h>
+#include <assert.h>
 
 enum { NBUF = 100000, MAX_SIZE = 37 };
 
@@ -73,6 +74,8 @@ static void *consumer(void *p) {
         uint64_t n = 1 + next_random(&state) % 512;
         if (n > avail) n = avail;
         if (done + n == t->total_bytes) atomic_store(&g_last_pull, 1);
+        audio_sample(t->a, NULL, now_ns());
+        if (atomic_load(&t->a->diag_queued_bytes) > available_bytes(t->a)) atomic_store(&t->failed, 1);
         pull(t->a, t->scratch, n);
         for (uint64_t i = 0; i < n; i++) {
             if (t->scratch[i] != (uint8_t)(want++)) atomic_store(&t->failed, 1);
@@ -85,7 +88,13 @@ static void *consumer(void *p) {
 
 static void *release_reader(void *p) {
     test_ctx *t = p;
+    uint64_t previous = 0;
     for (int i = 0; i < NBUF; ) {
+        dm_audio_diagnostic sample;
+        if (dm_audio_snapshot(&sample, 1)) {
+            if (sample.callback_ns < previous || sample.host_time_valid) atomic_store(&t->failed, 1);
+            previous = sample.callback_ns;
+        }
         gbuf *b = h_au_Released(t->out);
         if (!b) { sched_yield(); continue; }
         if (b != &t->bufs[i]) atomic_store(&t->failed, 1);
@@ -95,7 +104,41 @@ static void *release_reader(void *p) {
     return NULL;
 }
 
+static void sample_contract(void) {
+    char key[64]; uint8_t param[8] = {0}, data[5760] = {0}, output[5760];
+    assert(!h_au_OpenDef0(key, param));
+    aout *a = ao(key);
+    atomic_store(&a->state, STATE_STARTED);
+    gbuf first = {data, 3840, 3840}, second = {data + 3840, 1920, 1920};
+    assert(h_au_Append(key, &first) && h_au_Append(key, &second));
+    a->enqueue_ns[0] = 900000000;
+    a->enqueue_ns[1] = 950000000;
+    mach_timebase_info_data_t saved = g_audio_timebase;
+    g_audio_timebase = (mach_timebase_info_data_t){1, 1};
+    AudioTimeStamp timestamp = {.mHostTime = 1005000000, .mFlags = kAudioTimeStampHostTimeValid};
+    audio_sample(a, &timestamp, 1000000000);
+    dm_audio_diagnostic d;
+    assert(dm_audio_snapshot(&d, 1) == 1 && d.queued_bytes == 5760);
+    assert(d.oldest_enqueue_ns == 900000000 && d.callback_lead_ns == 5000000 && d.host_time_valid);
+    pull(a, output, 1920);
+    audio_sample(a, &timestamp, 1010000000);
+    assert(dm_audio_snapshot(&d, 1) == 1 && d.queued_bytes == 3840 && d.callback_lead_ns == -5000000);
+    pull(a, output, 1920);
+    audio_sample(a, NULL, 1020000000);
+    assert(dm_audio_snapshot(&d, 1) == 1 && d.queued_bytes == 1920);
+    assert(d.oldest_enqueue_ns == 950000000 && !d.host_time_valid);
+    pull(a, output, 1920);
+    audio_sample(a, NULL, 1030000000);
+    assert(dm_audio_snapshot(&d, 1) == 1 && !d.queued_bytes && !d.oldest_enqueue_ns);
+    assert(!dm_audio_snapshot(NULL, 1) && !dm_audio_snapshot(&d, 0));
+    g_audio_timebase = saved;
+    h_au_Close(key);
+    assert(!dm_audio_snapshot(&d, 1));
+}
+
 int main(void) {
+    setenv("DM_AUDIO", "0", 1);
+    sample_contract();
     char out[64], ev[64]; uint8_t prm[16];
     test_ctx t = {0};
     t.bufs = calloc(NBUF, sizeof *t.bufs); t.data = calloc(NBUF, sizeof *t.data); t.sizes = calloc(NBUF, sizeof *t.sizes); t.scratch = malloc(512);

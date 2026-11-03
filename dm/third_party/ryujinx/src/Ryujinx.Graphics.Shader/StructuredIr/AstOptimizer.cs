@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
+using Ryujinx.Graphics.Shader.Translation;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -8,7 +9,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 {
     static class AstOptimizer
     {
-        public static void Optimize(StructuredProgramContext context)
+        public static void Optimize(StructuredProgramContext context, TargetLanguage targetLanguage)
         {
             AstBlock mainBlock = context.CurrentFunction.MainBlock;
 
@@ -39,7 +40,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
             }
 
-            RemoveEmptyBlocks(mainBlock);
+            RemoveEmptyBlocks(mainBlock, targetLanguage != TargetLanguage.Spirv);
         }
 
         private static bool IsWorthPropagating(IAstNode source)
@@ -69,6 +70,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
                 else if (useNode is AstOperation useOperation)
                 {
+                    // SPIR-V calls take pointers to local arguments.
+                    if (useOperation.Inst == Instruction.Call)
+                    {
+                        continue;
+                    }
+
                     for (int srcIndex = 0; srcIndex < useOperation.SourcesCount; srcIndex++)
                     {
                         if (useOperation.GetSource(srcIndex) == propVar)
@@ -84,7 +91,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             }
         }
 
-        private static void RemoveEmptyBlocks(AstBlock mainBlock)
+        private static void RemoveEmptyBlocks(AstBlock mainBlock, bool allowElseIf)
         {
             Queue<AstBlock> pending = new();
 
@@ -129,7 +136,8 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                         parent.Remove(block);
                     }
                 }
-                else if (isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
+                // The SPIR-V generator handles nested selections, not ElseIf nodes.
+                else if (allowElseIf && isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
                 {
                     AstBlock parentOfParent = parent.Parent;
 

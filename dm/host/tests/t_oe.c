@@ -58,6 +58,15 @@ static int child_burst(int kind) {
 }
 int main(void) {
     unsetenv("DM_OE_SCRIPT"); reset();
+    CHECK(h_oe_InactivityMode() == 0 && !h_oe_InactivityExtQ(), "idle extension starts disabled without a system service");
+    h_oe_InactivityExt(0x101);
+    CHECK(h_oe_InactivityMode() == 1 && h_oe_InactivityExtQ(), "normal idle extension can be queried after setting it");
+    h_oe_InactivityUnsafe(0x101);
+    CHECK(h_oe_InactivityMode() == 2 && h_oe_InactivityExtQ(), "unsafe idle extension replaces normal extension with mode 2");
+    h_oe_InactivityExt(0x100);
+    CHECK(h_oe_InactivityMode() == 0 && !h_oe_InactivityExtQ(), "normal disable clears unsafe extension and ignores upper bool bits");
+    h_oe_InactivityExt(1); h_oe_InactivityUnsafe(0x100);
+    CHECK(h_oe_InactivityMode() == 0 && !h_oe_InactivityExtQ(), "unsafe disable clears normal extension and ignores upper bool bits");
     CHECK(empty(), "empty queue at start: returns false and leaves the output alone");
     dm_focus_set(1); dm_set_opmode(1); CHECK(empty(), "same state sends no notification");
     dm_focus_set(3); CHECK(h_oe_GetFocus() == 3, "background state 3 can be queried before popping");

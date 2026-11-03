@@ -1,0 +1,51 @@
+{
+  "baseline": "build39",
+  "game_version": "1.0.2",
+  "platform": "AppleTV11,1 / A12 / tvOS 27.2",
+  "upstream": "https://github.com/seedds/nxnative",
+  "upstream_commit": "3de606fd11f5e39c6b148e22e06f392daaecd0c4",
+  "shader_chain": "8746b8de4db7",
+  "historical_ipa_sha256": "283a13891f0629c3be71637c88aa6259c9791492984e1681c1474e0be1142154",
+  "ipa_included": false,
+  "historical_source_hashes": {
+    "dm/gfx/nvn/nvn_mtl.m": "e9b17496d681773e53cfbce6a1d34304d06fa2c287f6fa00b4b689738382e05f",
+    "dm/gfx/nvn/nvn_rt_cache.inc": "09667e6501388e7a1cb184dad0e3a72a1da07316a880e3a6cdcb69e5895fcfd9",
+    "dm/gfx/nvn/nvn_buffer_cache.inc": "e8df378f38c7a925ed8d2d87f9ae500680c58f8ae9045fab7f1dc8904f0ace00",
+    "dm/gfx/nvn/nvn_texture_snapshot.h": "9f11c74e1356b285567cb08a801380fd0f87a8bd4825315c93f18de38f3c11c6",
+    "dm/gfx/nvn/nvn_bc_blocks.inc": "23aacb46ca045dc018406c8b7f2c19c0f56c704230a3b40cf20b37d3dd30859b",
+    "dm/gfx/nvn/nvn_bc_copy.inc": "b01836c0c27fc0b6515298a76c78099534930dced19f36e59c8e7944e76a3276",
+    "dm/gfx/nvn/nvn_astc_upload.inc": "07833ee3b31f6840224bebc529fe658b67409bd9a4899f083a05cbd1a0c40b9e",
+    "dm/tvos/Sources/diagnostics.m": "fdac4d7204dec6fab1c0e34cbbc5a76dd2ec560221b507173819238fa9199498"
+  },
+  "historical_cpu_regression_groups": 9,
+  "snapshot_history": "Two commits: a source-only upstream baseline at 3de606fd11f5e39c6b148e22e06f392daaecd0c4, followed by the tvOS port and optimizations; original dirty repository preserved",
+  "exclusions": [
+    "game content and artwork",
+    "extracted or compiled game shaders and textures",
+    "keys and runtime credentials",
+    "saves and signing materials",
+    "compiled tools, build products, dependency directories",
+    "original Git history"
+  ],
+  "local_source_verification": {
+    "recorded_sources_match": 8,
+    "calculated_shader_chain": "8746b8de4db7",
+    "python_sources_parse": true,
+    "cpu_regressions": {
+      "buffer_cache": "passed",
+      "staging_retirement": "passed",
+      "bc_copy_batch": "passed"
+    },
+    "publication_scan": {
+      "files_before_git": 1177,
+      "unexpected_binary_files": 0,
+      "known_private_values_found": 0,
+      "credential_signatures_found": 0
+    }
+  },
+  "limitations": [
+    "Only eight production source hashes were recorded in the historical validation file; do not describe them as an exhaustive build source manifest.",
+    "Source-only reconstruction requires external game inputs and the selected toolchain.",
+    "No new device or Mac GPU/game execution during archiving."
+  ]
+}

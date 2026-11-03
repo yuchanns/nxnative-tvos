@@ -27,18 +27,18 @@ typedef struct {
     NVNdevice *dev; nvn_texdesc d; pool_t *pool; int64_t off;
     uint8_t has_layout, layout[8];
     const void *pkg_data;                // TextureBuilderSetPackagedTextureData: copied into the storage at TextureInitialize (13 Sentinels)
-    uint8_t set_swz; uint16_t swz;       // TextureBuilderSetSwizzle: r | g << 3 | b << 6 | a << 9 (NVN and Metal channel enums have the same values: 0 zero 1 one 2 R 3 G 4 B 5 A)
+    uint8_t set_swz : 1, dsmode : 2; uint16_t swz; // Channel selection and default depth/stencil sampling mode.
 } tex_builder_t;                                                                             FITS(tex_builder_t, NVNtextureBuilder);
 // Field order packed to 0x80: newer SDKs (SMBW, NVN 55) allocate NVNtexture as 0x80 bytes (allocated from main 0x978c3c, initialized at 0x978cd4);
 // the former 0x88 wrote past the object's end and corrupted the adjacent heap block's free list. has_layout sits in the alignment gap after d, layout and serial fill up to 0x80.
 typedef struct {
-    // set_swz / swz (as in tex_builder_t) take the alignment gap after d; the size is still 0x80
-    uint32_t magic; nvn_texdesc d; uint8_t has_layout, set_swz; uint16_t swz; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t layout[8];
+    // Sampling state takes the alignment gap after d; the size is still 0x80.
+    uint32_t magic; nvn_texdesc d; uint8_t has_layout; uint8_t set_swz : 1, dsmode : 2; uint16_t swz; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t layout[8];
     uint64_t serial;                     // Initialization serial: the replay layer uses it to find the MTLTexture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);
 _Static_assert(sizeof(tex_t) <= 0x80, "tex_t exceeds the newer SDKs' NVNtexture (0x80)");
 // The newer SDK's (NVN 55, SMBW) NVNtextureView is only 16 bytes: the game keeps it in a 16-byte stack slot (main +0x5796c), and the former 28-byte record wrote out of bounds over the saved fp / lr,
-//   so the function returned to 0x100000000 and crashed. Packed into 16 bytes: levels / layers / format / target + swizzle and depth-stencil mode (the last two only recorded for now)
+//   so the function returned to 0x100000000 and crashed. Packed into 16 bytes: levels / layers / format / target + swizzle and depth-stencil mode.
 typedef struct { uint8_t set_levels : 1, set_layers : 1, set_format : 1, set_target : 1, set_swizzle : 1, set_dsmode : 1, dsmode : 2;
                  uint8_t target, base_level, nlevels; uint16_t format, min_layer, nlayers; uint8_t swz[4]; uint16_t _rsv; } view_t;
 FITS(view_t, NVNtextureView);
@@ -104,7 +104,7 @@ enum {
 };
 // Payload (immediately follows op_hdr)
 typedef struct { int32_t n; const tex_t *color[8]; view_t cview[8]; uint8_t has_cview[8]; const tex_t *depth; view_t dview; uint8_t has_dview; } p_set_rt;
-typedef struct { int32_t index, mask; float rgba[4]; } p_clear_color;
+typedef struct { int32_t index, mask; double rgba[4]; } p_clear_color;   // exact for float, signed and unsigned 32-bit clears
 typedef struct { int32_t mode, pad; uint64_t addr; } p_render_cond;   // mode 0 / 1: SetRenderEnableConditional (render if the 64-bit counters at addr and addr + 16 are equal / not equal), 2 / 3: SetRenderEnable(true / false)
 typedef struct { float depth; int32_t depth_mask, stencil, stencil_mask; } p_clear_ds;
 typedef struct { int32_t first, n; float v[16][6]; } p_viewports;          // x, y, w, h, near, far (near and far are overridden by DEPTH_RANGE)
@@ -160,6 +160,7 @@ void xv_test_counts(int *dc, int *viol);
 int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1);   // The frame's earliest GPUStart / latest GPUEnd (mach absolute time, ns); returns 0 if not all complete or there is no GPU time
 void mtl_stats(uint64_t *passes, uint64_t *draws);
 void mtl_args_stats(uint64_t *enc, uint64_t *reuse);
+uint64_t mtl_args_binding_skips(void);
 void mtl_use_stats(uint64_t *call, uint64_t *skip);
 uint64_t mtl_ds_omit(void);   // Cumulative number of passes with no depth attachment because the lookahead proved depth-stencil unused
 uint64_t mtl_drawable_ns_take(void);   // Take and zero: cumulative ns spent waiting for nextDrawable in present   // Cumulative useResource calls actually issued / skipped by same-encoder dedup   // Cumulative argument buffer new-encode / reuse counts
@@ -172,6 +173,7 @@ int mtl_link_active(void);
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns);   // vsyncs = the game's present interval
 double mtl_presented_time(uint64_t n);
    // Actual presentation time (seconds) of the n-th present (counted from 1); 0 = not ready, −1 = dropped
+int mtl_present_trace(uint64_t n, double times[6]);   // Diagnostic enqueue / take / drawable / commit / GPU start / GPU end timestamps (seconds); 0 until complete or when disabled
 // Texture release (at Finalize)
 void mtl_tex_init(const tex_t *t);      // TextureInitialize: the serial belongs to a live texture object until mtl_tex_release
 void mtl_tex_release(tex_t *t);
@@ -186,6 +188,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
 void mtl_reg_tex(int id, const tex_t *t, const view_t *v);
 // textures written by WriteTexels (recorded by serial): the replay layer treats them like packaged textures, uploaded from guest memory and re-uploaded on dirty pages
 void mtl_tex_cpu_written(const tex_t *t);
+void mtl_bc_cpu_write_prepare(const tex_t *t);
 int mtl_tex_gpu_owned(uint64_t serial);                                  // its host texture is a render target or shader-writable: GPU content, never re-uploaded from guest memory
 // A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for. Returns 0 = no such stage

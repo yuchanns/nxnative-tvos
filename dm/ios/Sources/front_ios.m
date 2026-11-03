@@ -1,5 +1,6 @@
 // iOS front end (the iOS implementation of front.h): a centered 16:9 Metal view (black bars on both sides) + a full-screen virtual gamepad layer (DmGamepad.m, controls drawn over the picture).
 // The host runs on the big-stack thread started by main.m; front_run runs the guest directly on the calling thread.
+#include <TargetConditionals.h>
 #import <UIKit/UIKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
@@ -8,6 +9,13 @@
 #include "front.h"
 #include "hle.h"
 #include "dm.h"
+#include "render_config.h"
+#if TARGET_OS_TV
+#import "loading.h"
+#import "cloud_save.h"
+#include "display.h"
+#import "performance_hud.h"
+#endif
 
 UIView *dm_gamepad_view(CGRect frame);
 void dm_gamepad_reset(void);
@@ -17,7 +25,9 @@ int front_ios_boot_ok(void);
 static CAMetalLayer *g_layer;
 static void front_ios_power_watch(void);
 static void front_ios_audio_watch(void);
+#if !TARGET_OS_TV
 static UILabel *front_ios_fps_label(void);
+#endif
 
 @interface DmGameView : UIView
 @end
@@ -27,7 +37,7 @@ static UILabel *front_ios_fps_label(void);
     if ((self = [super initWithFrame:f])) {
         CAMetalLayer *l = (CAMetalLayer *)self.layer;
         l.device = MTLCreateSystemDefaultDevice(); l.pixelFormat = MTLPixelFormatBGRA8Unorm;
-        l.contentsScale = UIScreen.mainScreen.nativeScale; l.framebufferOnly = NO; l.opaque = YES;
+        self.contentScaleFactor = UIScreen.mainScreen.nativeScale; l.framebufferOnly = NO; l.opaque = YES;
         self.backgroundColor = UIColor.blackColor;
     }
     return self;
@@ -35,27 +45,58 @@ static UILabel *front_ios_fps_label(void);
 - (void)layoutSubviews {
     [super layoutSubviews];
     CAMetalLayer *l = (CAMetalLayer *)self.layer;
-    l.drawableSize = CGSizeMake(self.bounds.size.width * l.contentsScale, self.bounds.size.height * l.contentsScale);
+    UIScreen *screen = self.window.screen ?: UIScreen.mainScreen;
+    self.contentScaleFactor = screen.nativeScale;
+    CGSize size = CGSizeMake(self.bounds.size.width * self.contentScaleFactor, self.bounds.size.height * self.contentScaleFactor);
+    uint32_t dimensions[2];
+    const char *setting = "DM_OUTPUT_SIZE", *requested = getenv(setting);
+    if (!requested || !*requested) { setting = "DM_RENDER_SIZE"; requested = getenv(setting); }
+    if (requested) {
+        if (!dm_render_size_parse(requested, dimensions)) die("invalid %s=%s", setting, requested);
+        size = CGSizeMake(dimensions[0], dimensions[1]);
+    }
+    if (!CGSizeEqualToSize(l.drawableSize, size)) {
+        l.drawableSize = size;
+        LOG("front end: drawable %.0fx%.0f, native screen %.0fx%.0f, display mode %.0fx%.0f, native scale %.2f",
+            size.width, size.height, screen.nativeBounds.size.width, screen.nativeBounds.size.height,
+            screen.currentMode.size.width, screen.currentMode.size.height, screen.nativeScale);
+    }
 }
 @end
 
 @interface DmRootVC : UIViewController
 @property (nonatomic, strong) DmGameView *game;
 @property (nonatomic, strong) UIView *pad;
+#if TARGET_OS_TV
+@property (nonatomic, strong) UIView *performance;
+@property (nonatomic, strong) UILabel *cloudSave;
+@property (nonatomic, strong) NSTimer *cloudTimer;
+@property (nonatomic, copy) NSDictionary *cloudNotice;
+@property (nonatomic) NSTimeInterval cloudNoticeUntil;
+@property (nonatomic) BOOL cloudEnabled;
+#else
 @property (nonatomic, strong) UILabel *fps;
+#endif
 @end
 @implementation DmRootVC
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = UIColor.blackColor;
-    front_ios_power_watch();
     if (!front_ios_boot_ok()) {   // No game files: show a hint and do not start the host
+#if TARGET_OS_TV
+        UIView *loading = dm_tvos_loading_view(self.view.bounds);
+        [self.view addSubview:loading];
+        void front_tvos_prepare(UIView *loading); front_tvos_prepare(loading);
+#else
         UILabel *lb = [[UILabel alloc] initWithFrame:CGRectInset(self.view.bounds, 40, 40)];
         lb.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         lb.numberOfLines = 0; lb.textAlignment = NSTextAlignmentCenter; lb.textColor = UIColor.whiteColor;
         lb.text = @"Game files not found.\nPut the RomFS folder into this App's Documents as \"romfs\" (Files app), then restart.";
-        [self.view addSubview:lb]; return;
+        [self.view addSubview:lb];
+#endif
+        return;
     }
+    front_ios_power_watch();
     front_ios_audio_watch();
     self.game = [[DmGameView alloc] initWithFrame:self.view.bounds];
     [self.view addSubview:self.game];
@@ -63,8 +104,37 @@ static UILabel *front_ios_fps_label(void);
     self.pad = dm_gamepad_view(self.view.bounds);
     self.pad.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [self.view addSubview:self.pad];
+#if TARGET_OS_TV
+    self.performance = dm_tvos_performance_view();
+    [self.view addSubview:self.performance];
+    if (![dm_tvos_cloud_save_status()[@"state"] isEqual:@"disabled"]) {
+        self.cloudSave = [UILabel new]; self.cloudSave.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+        self.cloudSave.textColor = UIColor.whiteColor; self.cloudSave.textAlignment = NSTextAlignmentRight;
+        self.cloudSave.backgroundColor = UIColor.clearColor; self.cloudSave.userInteractionEnabled = NO;
+        [self.view addSubview:self.cloudSave];
+        __weak DmRootVC *weak = self;
+        self.cloudTimer = [NSTimer scheduledTimerWithTimeInterval:1 repeats:YES block:^(NSTimer *timer) {
+            DmRootVC *vc = weak;
+            if (!vc) { [timer invalidate]; return; }
+            NSDictionary *save = dm_tvos_cloud_save_status();
+            NSDictionary *notice = @{@"state": save[@"state"] ?: @"", @"message": save[@"message"] ?: @"",
+                                     @"revision": save[@"revision"] ?: @""};
+            NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+            BOOL enabled = (dm_tvos_display_options() & DM_TV_DISPLAY_CLOUD_SAVE) != 0;
+            if (![notice isEqual:vc.cloudNotice] || (enabled && !vc.cloudEnabled)) {
+                vc.cloudNotice = notice;
+                vc.cloudNoticeUntil = now + 5;
+            }
+            vc.cloudSave.text = save[@"message"];
+            vc.cloudSave.textColor = [save[@"state"] isEqual:@"synced"] ? ([UIColor colorNamed:@"LoadingAccent"] ?: UIColor.whiteColor) : UIColor.whiteColor;
+            vc.cloudEnabled = enabled;
+            vc.cloudSave.hidden = !enabled || [save[@"state"] isEqual:@"disabled"] || now >= vc.cloudNoticeUntil;
+        }];
+    }
+#else
     self.fps = front_ios_fps_label();   // above the pad, which hides while a controller is connected
     if (self.fps) [self.view addSubview:self.fps];
+#endif
 }
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
@@ -72,16 +142,35 @@ static UILabel *front_ios_fps_label(void);
     CGFloat w = b.size.width, h = b.size.height;   // Fit 16:9 into the whole screen
     if (w / h > 16.0 / 9.0) w = h * 16.0 / 9.0; else h = w * 9.0 / 16.0;
     self.game.frame = CGRectMake(floor((b.size.width - w) / 2), floor((b.size.height - h) / 2), w, h);
+#if !TARGET_OS_TV
     if (self.fps) {   // the top row's free stretch: right of DmGamepad.m's L3 key (102 + 17 of its units from the safe edge), level with − / + (22 units down); u is its unit
         CGRect s = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets); CGFloat u = MIN(b.size.height / 430.0, 1.3);
         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
     }
+#endif
+#if TARGET_OS_TV
+    dm_tvos_performance_layout(self.performance);
+    CGRect safe = UIEdgeInsetsInsetRect(b, self.view.safeAreaInsets);
+    CGFloat noticeY = CGRectGetMinY(safe) + 16;
+    unsigned options = dm_tvos_display_options();
+    if ((options & DM_TV_DISPLAY_FPS) &&
+        ((options & DM_TV_DISPLAY_POSITION_MASK) >> DM_TV_DISPLAY_POSITION_SHIFT) == DM_TV_TOP_RIGHT)
+        noticeY = CGRectGetMaxY(self.performance.frame) + 8;
+    self.cloudSave.frame = CGRectMake(CGRectGetMaxX(safe) - 520, noticeY, 520, 28);
+#endif
 }
-- (void)viewDidAppear:(BOOL)a { [super viewDidAppear:a]; UIApplication.sharedApplication.idleTimerDisabled = YES; front_ios_boot(); }
+- (void)viewDidAppear:(BOOL)a {
+    [super viewDidAppear:a];
+    if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
+        UIApplication.sharedApplication.idleTimerDisabled = YES;
+    front_ios_boot();
+}
+#if !TARGET_OS_TV
 - (BOOL)prefersHomeIndicatorAutoHidden { return YES; }
 - (UIRectEdge)preferredScreenEdgesDeferringSystemGestures { return UIRectEdgeAll; }   // Edge gestures need two swipes, to avoid accidental exits
 - (BOOL)prefersStatusBarHidden { return YES; }
 - (UIInterfaceOrientationMask)supportedInterfaceOrientations { return UIInterfaceOrientationMaskLandscape; }
+#endif
 @end
 UIViewController *front_ios_root(void) { return [DmRootVC new]; }
 
@@ -91,8 +180,10 @@ static _Atomic double g_brightness = -1;
 int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
 double dm_brightness_now(void) { return g_brightness; }
 static void front_ios_power_watch(void) {
+#if !TARGET_OS_TV
     g_brightness = UIScreen.mainScreen.brightness;
     [NSNotificationCenter.defaultCenter addObserverForName:UIScreenBrightnessDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; g_brightness = UIScreen.mainScreen.brightness; }];
+#endif
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
         (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - g_t0_ns) / 1e9); }];
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoPowerStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
@@ -103,12 +194,14 @@ static void front_ios_power_watch(void) {
 // Frame-rate counter: the frames put on screen in the last second (nvn_mtl.m counts them for NVN and for the Vulkan layer alike; frames the display link merged away are not counted).
 // On when the IPA was built with it (the NSP script's SHOW_FPS / --show-fps → DMShowFPS in Info.plist); DM_SHOW_FPS=0 / 1 in Documents/env.txt overrides that without a rebuild. NULL when off
 uint64_t mtl_present_count(void);
+#if !TARGET_OS_TV
 static UILabel *front_ios_fps_label(void) {
     const char *e = getenv("DM_SHOW_FPS");
     if (!(e ? atoi(e) != 0 : [[NSBundle.mainBundle objectForInfoDictionaryKey:@"DMShowFPS"] boolValue])) return nil;
     UILabel *l = [UILabel new];
     l.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightSemibold]; l.textColor = UIColor.whiteColor; l.textAlignment = NSTextAlignmentCenter;
-    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES; l.userInteractionEnabled = NO;
+    l.backgroundColor = [UIColor colorWithWhite:0 alpha:0.45]; l.layer.cornerRadius = 6; l.layer.masksToBounds = YES;
+    l.userInteractionEnabled = NO;
     l.text = @"-- fps";
     __block uint64_t n0 = mtl_present_count(); __block double t0 = CACurrentMediaTime();
     [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *t) {
@@ -119,6 +212,7 @@ static UILabel *front_ios_fps_label(void) {
     LOG("front end: frame-rate counter on");
     return l;
 }
+#endif
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
 void front_run(void (*guest)(void)) { guest(); }   // Already on main.m's big-stack thread
@@ -188,8 +282,18 @@ static void front_ios_audio_apply(void) { dm_audio_suspend(g_audio_bg || g_audio
 static void front_ios_audio_watch(void) {
     NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
     [nc addObserverForName:AVAudioSessionInterruptionNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
-        NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue], reason = [n.userInfo[AVAudioSessionInterruptionReasonKey] unsignedIntegerValue];
-        if (type == AVAudioSessionInterruptionTypeBegan) { LOG("audio session: interrupted (reason %lu)", (unsigned long)reason); g_audio_intr = 1; }
+        NSUInteger type = [n.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
+#if !TARGET_OS_TV
+        NSUInteger reason = [n.userInfo[AVAudioSessionInterruptionReasonKey] unsignedIntegerValue];
+#endif
+        if (type == AVAudioSessionInterruptionTypeBegan) {
+#if TARGET_OS_TV
+        LOG("audio session: interrupted");
+#else
+        LOG("audio session: interrupted (reason %lu)", (unsigned long)reason);
+#endif
+        g_audio_intr = 1;
+        }
         else {
             LOG("audio session: interruption ended"); g_audio_intr = 0;
             if (!g_audio_bg) front_ios_audio_session();
@@ -205,13 +309,14 @@ static void front_ios_audio_watch(void) {
 // Scene lifecycle (called by SceneDelegate in main.m): 0 resign active, 1 enter background, 2 return to foreground, 3 become active. On entering background, freeze the guest clock and suspend after in-flight GPU work completes (submitting GPU work in background gets the process killed).
 // The screen stays on while the game is active: only touches reset the idle timer, so with a controller (or during a cutscene) the screen dimmed and locked mid-game
 void front_ios_focus_event(int ev) {
+    // Scene activation owns wakefulness, including while assets load without a Metal layer.
+    if (ev == 1 || ev == 3) UIApplication.sharedApplication.idleTimerDisabled = (ev == 3);
     if (!g_layer) return;
     switch (ev) {
         case 0: dm_gamepad_reset(); dm_focus_set(2); break;
-        case 1: UIApplication.sharedApplication.idleTimerDisabled = NO; dm_focus_set(3); g_audio_bg = 1; front_ios_audio_apply(); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); break;
+        case 1: dm_focus_set(3); g_audio_bg = 1; front_ios_audio_apply(); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); break;
         case 2: dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); front_ios_audio_session(); g_audio_bg = 0; front_ios_audio_apply(); dm_focus_set(2); break;
         case 3:   // Becoming active again also ends an interruption whose "ended" never came (not every one sends it), and retries a session that would not activate on the way back
-            UIApplication.sharedApplication.idleTimerDisabled = YES;
             if (g_audio_intr) { LOG("audio session: active again with no interruption-ended notice; resuming"); g_audio_intr = 0; g_session_off = 1; }
             if (g_session_off) front_ios_audio_session();
             front_ios_audio_apply(); dm_focus_set(1); break;

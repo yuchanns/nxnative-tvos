@@ -4,9 +4,10 @@ B = build
 # tests that use the game profile need GAME=<base game title ID> (there is no default game); GINC only expands when used, so tests without the profile build as before
 GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME is not set: make GAME=<base game title ID>: $(shell python3 ../../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}')))
 GAME_H = ../gen/$(GAME)/game_profile.h
-run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old
+run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_xc3_sparse $(B)/t_guest_file_advice
 	$(B)/t_touch
 	$(B)/t_oe 2>/dev/null
+	$(B)/t_fpslock
 	$(B)/t_fs 2>/dev/null
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_commit_list
 	$(B)/t_thread_leak
@@ -17,6 +18,14 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_altstack
 	$(B)/t_condvar
 	$(B)/t_condvar_old
+	TMPDIR="$(abspath $(B))" $(B)/t_xc3_sparse
+	$(B)/t_guest_file_advice
+$(B)/t_xc3_sparse: t_xc3_sparse.c ../hle_xc3_heap_pages.c ../hle_xc3_sparse_arena.c ../xc3_heap_pages.h ../xc3_sparse_arena.h ../xc3_allocator_core.h | $(B)
+	clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -I.. -o $@ t_xc3_sparse.c ../hle_xc3_heap_pages.c ../hle_xc3_sparse_arena.c
+$(B)/t_guest_file_backing: t_guest_file_backing.m ../hle_guest_file_backing.c ../guest_file_backing.h | $(B)
+	clang -O1 -g -Wall -Wextra -fobjc-arc -I.. -o $@ t_guest_file_backing.m ../hle_guest_file_backing.c -framework Foundation -framework Metal
+$(B)/t_guest_file_advice: t_guest_file_advice.c ../hle_guest_file_backing.c ../guest_file_backing.h | $(B)
+	clang -O1 -g -Wall -Wextra -fsanitize=address,undefined -I.. -o $@ t_guest_file_advice.c
 $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
@@ -31,9 +40,9 @@ $(B)/t_fs_case: t_fs_case.c ../hle_fs.c ../hle_bigstack.c ../hle.h ../dm.h $(GAM
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_fs_case.c ../hle_bigstack.c
 $(B)/t_audio: t_audio.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio.c -framework AudioToolbox
-$(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
+$(B)/t_audio_spsc: t_audio_spsc.c ../hle_audio.c ../hle_audio_diag.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
-$(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle.h ../dm.h $(GAME_H) | $(B)
+$(B)/t_audio_spsc_tsan: t_audio_spsc.c ../hle_audio.c ../hle_audio_diag.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -g -O1 -fsanitize=thread -Wno-unused-function -I.. $(GINC) -o $@ t_audio_spsc.c -framework AudioToolbox
 $(B)/t_swkbd: t_swkbd.c ../hle_swkbd.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_swkbd.c ../hle_swkbd.c
@@ -41,12 +50,17 @@ $(B)/t_altstack: t_altstack.c t_altstack_stub.c ../crash.c ../dm.h $(GAME_H) | $
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_altstack.c t_altstack_stub.c ../crash.c
 $(B)/t_oe: t_oe.c ../hle_oe.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_oe.c
+$(B)/t_fpslock: t_fpslock.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -Wall -fsanitize=address,undefined -I.. $(GINC) -o $@ t_fpslock.c
 $(B)/t_condvar: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
 $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
+$(B)/t_wait_trace: t_wait_trace.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -Wall -fsanitize=address,undefined -Wno-unused-function -I.. $(GINC) -o $@ t_wait_trace.c t_condvar_stub.c ../hle_thread.c
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
+run: $(B)/t_fpslock
 tsan: $(B)/t_audio_spsc_tsan
 	$(B)/t_audio_spsc_tsan

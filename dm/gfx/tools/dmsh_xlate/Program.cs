@@ -14,7 +14,9 @@ using Ryujinx.Graphics.Shader;
 using Ryujinx.Graphics.Shader.Translation;
 using System;
 using System.Collections.Generic;
+using System.Collections;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -29,7 +31,7 @@ static class SwshXlate
     {
         readonly byte[] _code; readonly JsonObject _job; int _binding = 1; public readonly List<string> Notes = new();
         readonly byte[] _c1;
-        public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
+        public Accessor(byte[] code, JsonObject job) { _code = code; _job = job; _binding = (string)job["stage"] == "gs" ? 16 : 1; _c1 = job["c1"] is JsonNode h ? Convert.FromHexString((string)h) : Array.Empty<byte>(); }
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }
         // All resources go into set 0, each with a distinct binding number (spirv-cross emits them as one argument buffer); the translator's convention of giving the buffer of constant segment number index binding = index+1 is not relied on
@@ -91,7 +93,8 @@ static class SwshXlate
             Array32<AttributeType> attr = default; Array8<AttributeType> fout = default;
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
-            return new GpuGraphicsState(false, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            InputTopology topology = _job["input_topology"] is JsonNode t ? Enum.Parse<InputTopology>((string)t) : InputTopology.Triangles;
+            return new GpuGraphicsState(false, topology, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
@@ -116,6 +119,92 @@ static class SwshXlate
         return false;
     }
 
+    static JsonObject Resources(string key, string stage, ShaderProgram program, List<string> notes)
+    {
+        var result = new JsonObject
+        {
+            ["key"] = key, ["stage"] = stage,
+            ["notes"] = new JsonArray(notes.ConvertAll(n => (JsonNode)n).ToArray()),
+            ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(),
+            ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
+            ["uses_frag_coord"] = program.Info.UsesFragCoord, ["frag_out_map"] = program.Info.FragmentOutputMap,
+        };
+        foreach (var b in program.Info.CBuffers) result["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
+        foreach (var b in program.Info.SBuffers) result["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
+        foreach (var (list, name) in new[] { (program.Info.Textures, "textures"), (program.Info.Images, "images") })
+            foreach (var t in list) result[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
+        return result;
+    }
+
+    static void WriteProgram(string directory, string key, string stage, ShaderProgram program, List<string> notes)
+    {
+        File.WriteAllBytes(Path.Combine(directory, key + ".spv"), program.BinaryCode);
+        File.WriteAllText(Path.Combine(directory, key + ".res.json"), Resources(key, stage, program, notes).ToJsonString());
+    }
+
+    static void CheckGeometryStreams(TranslatorContext context)
+    {
+        object program = typeof(TranslatorContext).GetField("_program", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(context);
+        foreach (object function in (IEnumerable)program)
+            foreach (object block in (IEnumerable)function.GetType().GetProperty("Blocks").GetValue(function))
+                foreach (object instruction in (IEnumerable)block.GetType().GetProperty("OpCodes").GetValue(block))
+                {
+                    Type type = instruction.GetType();
+                    if (type.GetField("Name").GetValue(instruction).ToString() != "Out") continue;
+                    ulong raw = (ulong)type.GetField("RawOpCode").GetValue(instruction);
+                    string encoding = ((Delegate)type.GetField("Emitter").GetValue(instruction)).Method.Name;
+                    bool zero = encoding switch
+                    {
+                        "OutR" => ((raw >> 20) & 255) == 255,
+                        "OutI" => (((raw >> 37) & 0x80000) | ((raw >> 20) & 0x7ffff)) == 0,
+                        _ => false,
+                    };
+                    if (!zero) throw new InvalidDataException("Geometry output stream is not statically zero");
+                }
+    }
+
+    static void TranslateGeometry(byte[] code, JsonObject job, TranslationOptions options, string directory)
+    {
+        string key = (string)job["key"];
+        JsonArray variants = new();
+        foreach (InputTopology topology in Enum.GetValues<InputTopology>())
+        {
+            job["input_topology"] = topology.ToString();
+            var accessor = new Accessor(code, job);
+            var context = Translator.CreateContext(0, accessor, options);
+            CheckGeometryStreams(context);
+            context.SetFullVertexOutputMapForGeometryAsCompute();
+            ShaderProgram geometry = context.Translate(asCompute: true);
+            ShaderProgram passthrough = context.GenerateVertexPassthroughForCompute();
+            int count = topology switch { InputTopology.Points => 1, InputTopology.Lines => 2,
+                InputTopology.Triangles => 3, InputTopology.LinesAdjacency => 4, InputTopology.TrianglesAdjacency => 6,
+                _ => throw new InvalidDataException("Invalid geometry input topology") };
+            string geometryKey = key + "_g" + count;
+            string vertexKey = key + "_p" + count;
+            WriteProgram(directory, geometryKey, "gs", geometry, accessor.Notes);
+            WriteProgram(directory, vertexKey, "vs", passthrough, new());
+            ResourceReservations reservations = context.GetResourceReservations();
+            JsonArray offsets = new();
+            foreach (var io in reservations.GetIoOffsets())
+                offsets.Add(new JsonObject { ["storage"] = io.Storage, ["variable"] = io.Variable,
+                    ["location"] = io.Location, ["component"] = io.Component, ["offset"] = io.Offset });
+            variants.Add(new JsonObject {
+                ["topology"] = topology.ToString(), ["input_vertices"] = count,
+                ["geometry"] = geometryKey, ["passthrough"] = vertexKey,
+                ["input_words"] = reservations.InputSizePerInvocation,
+                ["output_words"] = reservations.OutputSizePerInvocation,
+                ["max_vertices"] = geometry.Info.GeometryMaxOutputVertices,
+                ["invocations"] = geometry.Info.ThreadsPerInputPrimitive,
+                ["index_stride"] = checked(geometry.Info.GeometryMaxOutputVertices * 2),
+                ["output_topology"] = ((BitConverter.ToUInt32(code, 12) >> 24) & 15) switch
+                    { 1 => "Points", 6 => "LineStrip", 7 => "TriangleStrip", _ => throw new InvalidDataException("Invalid geometry output topology") },
+                ["vertex_info_bytes"] = VertexInfoBuffer.RequiredSize, ["offsets"] = offsets,
+            });
+        }
+        File.Copy(Path.Combine(directory, key + "_g1.spv"), Path.Combine(directory, key + ".spv"), true);
+        File.WriteAllText(Path.Combine(directory, key + ".geometry.json"), variants.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
     static int Main(string[] args)
     {
         if (args.Length == 1 && args[0] == "--source-sha")   // first 16 digits of the sha256 of the embedded Program.cs + csproj (same convention as dmsh_chain.py)
@@ -136,6 +225,12 @@ static class SwshXlate
                 var acc = new Accessor(code, job);
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                if ((string)job["stage"] == "gs")
+                {
+                    TranslateGeometry(code, job, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags), outDir);
+                    ok++;
+                    continue;
+                }
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 ShaderProgram p = ctx.Translate();
                 if (UsesFloat64(p.BinaryCode))   // Tears of the Kingdom 1.4.3: 30 shaders used double and failed in the Metal compiler
@@ -145,16 +240,7 @@ static class SwshXlate
                     p = ctx.Translate(); acc.Notes.Add("FP64 lowered to FP32 (DoubleToFloat)");
                 }
                 File.WriteAllBytes(Path.Combine(outDir, key + ".spv"), VertexCounterLowering.Apply(code, (string)job["stage"], p.BinaryCode, acc.Notes));
-                var res = new JsonObject
-                {
-                    ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
-                    ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
-                    ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
-                };
-                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
-                foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
-                foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
-                    foreach (var t in list) res[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });
+                var res = Resources(key, (string)job["stage"], p, acc.Notes);
                 File.WriteAllText(Path.Combine(outDir, key + ".res.json"), res.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
                 ok++;
             }

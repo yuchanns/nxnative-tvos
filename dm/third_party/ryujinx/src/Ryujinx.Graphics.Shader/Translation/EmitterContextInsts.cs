@@ -233,12 +233,36 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         public static Operand EmitVertex(this EmitterContext context)
         {
-            return context.Add(Instruction.EmitVertex);
+            Operand skip = null;
+            if (context.VertexAsCompute && context.TranslatorContext.Stage == ShaderStage.Geometry)
+            {
+                // Emission beyond max_vertices is a no-op. Keep executing later
+                // shader instructions, including stores and atomics.
+                skip = Label();
+                Operand count = context.Load(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryOutputVertexCountMemoryId);
+                context.BranchIfTrue(skip, context.ICompareGreaterOrEqualUnsigned(count, Const(context.TranslatorContext.Definitions.MaxOutputVertices)));
+            }
+            Operand result = context.Add(Instruction.EmitVertex);
+            if (skip != null) context.MarkLabel(skip);
+            return result;
         }
 
         public static Operand EndPrimitive(this EmitterContext context)
         {
-            return context.Add(Instruction.EndPrimitive);
+            Operand skip = null;
+            if (context.VertexAsCompute && context.TranslatorContext.Stage == ShaderStage.Geometry)
+            {
+                // Empty cuts produce no primitive and consume no index storage.
+                skip = Label();
+                int lastMemory = context.ResourceManager.LocalGeometryEndVertexCountMemoryId;
+                Operand count = context.Load(StorageKind.LocalMemory, context.ResourceManager.LocalGeometryOutputVertexCountMemoryId);
+                Operand last = context.Load(StorageKind.LocalMemory, lastMemory);
+                context.BranchIfTrue(skip, context.ICompareEqual(count, last));
+                context.Store(StorageKind.LocalMemory, lastMemory, count);
+            }
+            Operand result = context.Add(Instruction.EndPrimitive);
+            if (skip != null) context.MarkLabel(skip);
+            return result;
         }
 
         public static Operand FindLSB(this EmitterContext context, Operand a)

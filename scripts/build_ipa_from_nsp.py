@@ -20,7 +20,7 @@ from pathlib import Path
 
 # ---- Settings ----
 NSP_DIR = '/Volumes/S790/nsp/The Legend of Zelda Tears of the Kingdom/'                            # folder holding the NSPs (empty = ask at run time)
-PROD_KEYS = '/Users/seedds/My Drive/Python_Scripts/nsp_check/prod.keys'                          # path of prod.keys (empty = ask at run time)
+PROD_KEYS = ''                          # path of prod.keys (empty = ask at run time)
 PACKAGE = ''                            # version packed into the IPA (empty = the profile's package; Mario 'v327680' i.e. 1.2.1, or 'v0')
 OUT_IPA = ''                            # output IPA (empty = <the profile's ipa> in the NSP folder)
 APP_NAME = ''                           # app name on the home screen (empty = the game name in the base NSP)
@@ -346,7 +346,8 @@ def pick_nsps(fam, versions):
         if ver == 'v0': out[ver] = (fam['base'], None); continue
         n = int(ver[1:])
         upd = [u for v, u in fam['updates'] if v == n] or [u for v, u in fam['updates'] if v is None and len(fam['updates']) == 1]   # without a version in the file name only a single update is accepted; build IDs are checked afterwards
-        if not upd: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+        if not upd:   # merged NSPs / cartridges can carry the patch themselves; nx_extract checks their CNMT version before extracting
+            say(f'looking for update {ver} inside {fam["base"].name}'); out[ver] = (fam['base'], None); continue
         say(f'update {ver}: {upd[0].name}'); out[ver] = (fam['base'], upd[0])
     return out
 
@@ -380,10 +381,12 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     PROG.stage('survey: code modules', step='reading')
     xlog = (logs / 'extract.log').read_text(errors='replace')
     dv = re.search(r'display version (\S+)', xlog)
+    cv = re.search(r'^title .*?, update [0-9a-f]+, version (\d+)$', xlog, re.M)
     F = pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
     R = [f'# Survey: {nacp.name(ex / "control.nacp") or "?"} ({app:016X})', '', f'- display version: {dv.group(1) if dv else "?"}', f'- base: `{fam["base"].name}` ({fam["base"].stat().st_size / 2**30:.2f} GB)']
     R += [f'- update: `{p.name}` (v{v}, {p.stat().st_size / 2**30:.2f} GB){" (used for this survey)" if p == upd else ""}' for v, p in ups]
     R += [f'- DLC: `{p.name}` ({p.stat().st_size / 1024:.0f} KB{", licence only, no content" if p.stat().st_size < 1 << 20 else ""})' for _, _, p in fam['dlc']]
+    if cv: R.append(f'- selected update content version: {cv.group(1)} (identified by the package metadata)')
 
     # Code modules
     R += ['', '## Code modules', '', '| module | what | build ID | text / ro / data (MB) | bss (MB) |', '|---|---|---|---|---|']
@@ -446,7 +449,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     for n in notes: say(n)
     say(f'survey report: {work / "survey.md"}')
     upv = ups[-1][0] if ups else None
-    return {'F': F, 'name': nacp.name(ex / 'control.nacp') or '', 'display': dv.group(1) if dv else '?', 'version': 'v0' if upd is None else f'v{upv or 1}'}
+    return {'F': F, 'name': nacp.name(ex / 'control.nacp') or '', 'display': dv.group(1) if dv else '?', 'version': f'v{cv.group(1)}' if cv else 'v0' if upd is None else f'v{upv or 1}'}
 
 
 # ---- Provisional profile (a game with no profile in dm/games) ----
@@ -588,7 +591,7 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
     PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
-    run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+    run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + ['--content-version', name[1:]] + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     check_build(tmp, name, g); swap_in(tmp, dst)
     n, b = extracted(log) or (0, 0)
     PROG.end(f'{n:,} files, {amount(b, "B")}')
@@ -596,22 +599,27 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):
 
 
 def extract_aoc(nx, keys, work, app, fam, logs):
-    """DLC NSPs in the folder → <id>_build/aoc/<index>/ (the RomFS of each one's data NCA; index = title ID − base − 0x1000). The host reports these indices as owned and mounts them (DM_AOC_DIR).
+    """Embedded DLC and DLC NSPs in the folder → <id>_build/aoc/<index>/ (the RomFS of each one's data NCA; index = title ID − base − 0x1000). The host reports these indices as owned and mounts them (DM_AOC_DIR).
     Returns None without DLC. DLC packages are small (121 KB each for Engage, the content itself is in the update), so they are extracted again every time"""
-    if not fam['dlc']: return None
     tmp = work / 'aoc.partial'; rmtree(tmp)
     best = {}   # when one DLC comes in several copies, take the highest version, and the largest of equal versions
     for tid, ver, p in fam['dlc']:
         k = (ver or 0, p.stat().st_size)
         if tid not in best or k > best[tid][0]: best[tid] = (k, p)
     PROG.stage('extract DLC')
+    run([nx, keys, '--aoc-all', fam['base'], tmp], logs / 'aoc_embedded.log')
+    embedded = {int(t, 16): int(v) for t, v in re.findall(r'add-on content ([0-9a-f]+), version (\d+)', (logs / 'aoc_embedded.log').read_text())}
     for i, (tid, (_, p)) in enumerate(sorted(best.items())):
+        if (version_of(p) or 0) < embedded.get(tid, -1): continue
         idx = tid - app - 0x1000
         PROG.set(step='extracting', done=i, total=len(best), unit='DLC')
         say(f'DLC index {idx}: {p.name}')
+        rmtree(tmp / str(idx))   # an external version replaces the embedded RomFS, including files removed by the newer version
         run([nx, keys, '--aoc', p, tmp / str(idx)], logs / f'aoc_{idx}.log')
+    count = len([p for p in tmp.iterdir() if p.is_dir()]) if tmp.exists() else 0
+    PROG.end(f'{count} DLC')
+    if not count: return None
     swap_in(tmp, work / 'aoc')
-    PROG.end(f'{len(best)} DLC')
     return work / 'aoc'
 
 
@@ -919,20 +927,23 @@ def data_rows(b):   # a table's data rows (without # comment lines: the header c
     return [l for l in b.splitlines() if not l.startswith(b'#')]
 
 
-def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None):
+def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None, aoc=None):
     """The shader split into pkg, checked against the profile's tables. Returns its key (None for a provisional profile or damaged files, which never reuse it): the package is reused
     when the tools, the profile and each version's main, RomFS (paths and sizes) and run-time capture are as at the last successful split.
     oodle: for a game with Trinity packs (Pokémon Legends: Z-A; profile_guess.py shader_sources), a function that builds the Mac host and returns the split's DM_OODLE_HOST / DM_OODLE_MODULES; called only when the split runs"""
     names = ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv')
     PROG.stage('shader split', step='checking the inputs')   # then a spinner: shader_split.py writes the package and the tables only at the end
     kf = pkg.with_name(pkg.name + '.key')
-    key = None if provisional or ALLOW_DAMAGED else fingerprint(('files', tool_files(repo)), ('files', profile_files(g)),
+    key = None if provisional or ALLOW_DAMAGED else fingerprint(('files', tool_files(repo)), ('files', profile_files(g)), ('tree', aoc) if aoc else None,
         *[x for r, m in zip(roms, mains) for x in (('files', [m]), ('tree', r), ('files', sorted((r.parent / 'glslc_capture').glob('*.glslc'))),
                                                    ('files', sorted((r.parent / 'ue_shaders').glob('*.ushaderbytecode'))))])
     if key and pkg.is_dir() and (note := reused(kf, key)) is not None:
         PROG.end(f'{note}, reused (inputs unchanged)'); return key
     if oodle:   # the packs are decoded by the game's own Oodle in the Mac host (dm/host/hle_oodle.c)
         PROG.set(step='building the Mac host for the game\'s Oodle decoder'); env = dict(env, **oodle())
+    env = dict(env)
+    if aoc: env['DM_AOC_DIR'] = str(aoc)
+    else: env.pop('DM_AOC_DIR', None)
     PROG.set(step='splitting')
     tmp = pkg.with_name(pkg.name + '.partial'); rmtree(tmp); (tmp / 'tables').mkdir(parents=True)
     run([py, repo / 'dm/gfx/tools/shader_split.py', ','.join(map(str, roms)), ','.join(map(str, mains)), tmp / 'pkg'] + [tmp / 'tables' / n for n in names], logs / 'shader_split.log', env=env)
@@ -1202,7 +1213,7 @@ def main(args=None):
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'less than {gb:.0f} GB free on the volume of {work}')
     heapck = provisional and HEAP_CHECK and not args.no_heap_check and not heap_checked(g)   # the heap check, when the game needs one (once per provisional profile: it stamps the profile)
-    PROG.plan(1 + len(versions) + bool(fam['dlc']) + 4)   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders and the run-time steps added below), app build, IPA pack
+    PROG.plan(1 + len(versions) + 1 + 4)   # nx_extract, each version's extraction, the DLC, rewrite, the Vulkan shaders (or the NVN shader split; iOS shaders and the run-time steps added below), app build, IPA pack
     PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     PROG.end()
@@ -1248,7 +1259,7 @@ def main(args=None):
     else:
         # Trinity packs: the split decodes them with the packed version's own Oodle decoder, in the Mac host built for the profile
         oodle = (lambda: {'DM_OODLE_HOST': str(build_mac_host(repo, work / 'tools/dmhost', env, logs, g)), 'DM_OODLE_MODULES': str(patched)}) if src['oodle_packs'][0] else None
-        skey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional, oodle)
+        skey = split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional, oodle, aoc)
         ios = build_shaders(py, repo, sh, xlate, env, logs, g, provisional, skey)
 
     if free_gb(out_ipa.parent) < 5: raise BuildError(f'less than 5 GB free on the volume of {out_ipa.parent}')

@@ -14,9 +14,13 @@ DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Works
 HERE = os.path.dirname(os.path.abspath(__file__)); GFX = os.path.dirname(HERE); HOME = os.path.expanduser('~')
 sys.path.insert(0, os.path.join(GFX, '../games')); import game as _game   # game profiles
 GAME = _game.load()
-FILES = ['tools/dmsh_chain.py', 'tools/dmsh_build.py', 'tools/dmsh_fetch.py', 'tools/dmsh_facts.py', 'tools/dmsh_xlate/Program.cs', 'tools/dmsh_xlate/dmsh_xlate.csproj', '../ios/tools/ios_metal.py', 'tools/dmsh_chain.lock']
+FILES = ['tools/dmsh_chain.py', 'tools/dmsh_build.py', 'tools/dmsh_geometry.py', 'tools/dmsh_outputs.py', 'tools/dmsh_fetch.py', 'tools/dmsh_legacy.py', 'tools/dmsh_border.py', 'tools/dmsh_facts.py', 'tools/dmsh_xlate/Program.cs', 'tools/dmsh_xlate/dmsh_xlate.csproj', '../ios/tools/ios_metal.py', '../tvos/tools/compile_shaders.py', 'tools/dmsh_chain.lock']
 TABLES = ['shader_facts.tsv', 'shader_map.tsv', 'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv']   # in the game profile folder
-LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = str(GAME.table('dmsh_chain.h'))
+DEFAULT_LOCK = os.path.join(HERE, 'dmsh_chain.lock')
+# An experimental profile may pin another installed toolchain without changing
+# the tools required by the existing profiles. It still gets a distinct chain.
+LOCK = str(GAME.table('dmsh_chain.lock')) if GAME.table('dmsh_chain.lock').exists() else DEFAULT_LOCK
+HEADER = str(GAME.table('dmsh_chain.h'))
 # the translator defaults to the in-repo build that matches the lock file (a rebuilt dll has different fingerprints)
 XLATE_DIR = os.path.dirname(os.environ.get('XLATE', os.path.join(HERE, 'dmsh_xlate_bin/dmsh_xlate')))
 
@@ -29,6 +33,8 @@ def version():
         h.update(f.encode() + b'\0' + open(os.path.join(GFX, f), 'rb').read() + b'\0')
     for f in TABLES:
         h.update(f'game/{f}'.encode() + b'\0' + GAME.table(f).read_bytes() + b'\0')
+    if LOCK != DEFAULT_LOCK:
+        h.update(b'game/dmsh_chain.lock\0' + open(LOCK, 'rb').read() + b'\0')
     h.update(''.join(f'{k}\t{chr(9).join(v)}\n' for k, v in GAME.rows if k.startswith(('nvn_', 'shader_'))).encode())   # the profile keys that affect the build
     h.update(options().encode())
     return h.hexdigest()[:12]

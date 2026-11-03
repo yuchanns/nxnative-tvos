@@ -38,8 +38,8 @@ static int classify(vm_address_t a, const vm_region_submap_info_data_64_t *in) {
 }
 
 // DM_MEMSTAT_DUMP=seconds: at that second, write every VM region ≥1 MiB line by line to <tsv>.regions (for diagnosing the accounting method)
-static void dump_regions(const char *path) {
-    FILE *f = fopen(path, "w"); if (!f) return;
+static int dump_regions(const char *path) {
+    FILE *f = fopen(path, "w"); if (!f) return 0;
     fprintf(f, "start	size MiB	class	user_tag	share_mode	obj_id	ref_count	resident MiB	dirty MiB	swapped MiB	file\n");
     vm_address_t a = 0; vm_size_t sz; natural_t depth = 0; vm_size_t pg = vm_page_size;
     for (;;) {
@@ -51,10 +51,11 @@ static void dump_regions(const char *path) {
                     in.object_id, in.ref_count, (uint64_t)in.pages_resident * pg >> 20, (uint64_t)in.pages_dirtied * pg >> 20, (uint64_t)in.pages_swapped_out * pg >> 20, in.external_pager);
         a += sz;
     }
-    fclose(f);
+    int ok = !ferror(f);
+    return fclose(f) == 0 && ok;
 }
 
-static void sample(FILE *f, double t, id<MTLDevice> dev) {
+static uint64_t sample(FILE *f, double t, id<MTLDevice> dev) {
     task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
     uint64_t fp = task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS ? vi.phys_footprint : 0;
     uint64_t avail = 0;
@@ -86,31 +87,55 @@ static void sample(FILE *f, double t, id<MTLDevice> dev) {
     for (int c = 0; c < NC; c++) fprintf(f, "\t%llu/%llu/%llu", virt[c] >> 20, res[c] >> 20, bill[c] >> 20);
     fprintf(f, "\t%llu\t%lld\n", sum >> 20, ((int64_t)fp - (int64_t)sum) >> 20);
     fflush(f);
+    return fp;
 }
 
 static void *memstat_thread(void *p) {
     FILE *f = fopen((const char *)p, "w");
     if (!f) { LOG("memstat: cannot open %s", (const char *)p); return NULL; }
+    LOG("memstat: sampler writing to %s", (const char *)p);
     fprintf(f, "# unit MiB; kernel accounting internal / compressed / graphics ledger / headroom to the limit; class columns = virtual/resident/charged (deduplicated per object); charged total = Σ private charged; unattributed = phys_footprint − charged total\nseconds\tphys_footprint\tavailable\tmetal_alloc\tinternal\tcompressed\tgraphics\theadroom");
     for (int c = 0; c < NC; c++) fprintf(f, "\t%s", k_cls[c]);
     fprintf(f, "\tcharged total\tunattributed\n");
     id<MTLDevice> dev = MTLCreateSystemDefaultDevice();   // The same device object as the graphics backend (the system default device singleton)
     uint64_t t0 = now_ns();
     const char *ds = getenv("DM_MEMSTAT_DUMP"); int dump_at = ds ? atoi(ds) : -1;
+    const char *mb = getenv("DM_MEMSTAT_DUMP_MB"); uint64_t dump_mb = mb ? strtoull(mb, NULL, 10) : 0;
     char dp[1100]; snprintf(dp, sizeof dp, "%s.regions", (const char *)p);
-    for (int sec = 0;; sec++) { sample(f, (now_ns() - t0) / 1e9, dev); if (sec == dump_at) dump_regions(dp); sleep(1); }
+    for (int sec = 0;; sec++) {
+        double elapsed = (now_ns() - t0) / 1e9;
+        uint64_t footprint = sample(f, elapsed, dev);
+        int crossed = dump_mb && (footprint >> 20) >= dump_mb;
+        if ((sec == dump_at || crossed) && dump_regions(dp)) {
+            LOG("memstat: region snapshot at %.1f s, footprint %llu MiB", elapsed, footprint >> 20);
+            if (crossed) dump_mb = 0;
+        }
+        sleep(1);
+    }
     return NULL;
 }
 
-__attribute__((constructor)) static void memstat_start(void) {
+void dm_memstat_start(void) {
     const char *p = getenv("DM_MEMSTAT");
     if (!p || !*p) return;
     char *path = strdup(p);
-#if TARGET_OS_IPHONE
-    if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 16; path = malloc(n); snprintf(path, n, "%s/Documents/%s", getenv("HOME"), p); }   // Relative name → the container's Documents (the container path is not known before launch)
+#if TARGET_OS_TV
+    if (*p != '/') {
+        NSString *cache = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES)[0];
+        NSString *directory = [cache stringByAppendingPathComponent:@"nxnative"];
+        free(path); path = strdup([directory stringByAppendingPathComponent:@(p)].fileSystemRepresentation);
+    }
+#elif TARGET_OS_IPHONE
+    if (*p != '/') { size_t n = strlen(getenv("HOME")) + strlen(p) + 16; free(path); path = malloc(n); snprintf(path, n, "%s/Documents/%s", getenv("HOME"), p); }
 #endif
-    pthread_t th; pthread_create(&th, NULL, memstat_thread, path); pthread_detach(th);
+    pthread_t th; int error = pthread_create(&th, NULL, memstat_thread, path);
+    if (error) { LOG("memstat: cannot start sampler: %s", strerror(error)); free(path); return; }
+    pthread_detach(th);
 }
+
+#if !TARGET_OS_IPHONE
+__attribute__((constructor)) static void memstat_start(void) { dm_memstat_start(); }
+#endif
 
 // ---------- Per-thread CPU: DM_THRCPU=<tsv path>[,interval in seconds (default 10)] (common to Mac / iOS; on iOS a relative name → the container's Documents) ----------
 // Every interval, walk all threads of this process (task_threads), take the thread name and user + system CPU time (ns) from THREAD_EXTENDED_INFO, and difference them by thread id:

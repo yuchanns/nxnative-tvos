@@ -65,6 +65,11 @@ typedef struct { uint64_t ret; int kind, arg; uint64_t orig; } gate_t;
 #define GATE_BITS 12                     // 4096 slots, gate count ≤ 1024, load factor ≤ 1/4
 static gate_t g_gate[1u << GATE_BITS];
 static int g_ngate;
+int gate_svc_present(int number) {
+    for (unsigned i = 0; i < sizeof g_gate / sizeof *g_gate; i++)
+        if (g_gate[i].ret && g_gate[i].kind == G_SVC && g_gate[i].arg == number) return 1;
+    return 0;
+}
 static inline unsigned gate_h(uint64_t a) { return (unsigned)(((a >> 2) * 0x9E3779B97F4A7C15ull) >> (64 - GATE_BITS)); }
 
 void gate_register(uint64_t ret_abs, const char *kind, int arg, uint64_t orig) {

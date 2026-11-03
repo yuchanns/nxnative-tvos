@@ -6,9 +6,13 @@
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
 // Title keys come from the common tickets (.tik) inside the NSPs, so only prod.keys is needed; key values are never printed.
 // The base game may also be a cartridge dump (.xci, Monster Hunter Rise): its secure partition holds the NCAs, which carry their keys in the key area (no ticket).
+// Merged packages are matched by CNMT content IDs. --content-version selects a patch version (0 = base only); otherwise the newest embedded patch is used.
+// --aoc-all extracts every add-on content title of the application in a merged package to <output dir>/<index>/.
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using LibHac.Common;
 using LibHac.Common.Keys;
@@ -28,14 +32,31 @@ static class P {
     static int Main(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
+        uint? version = null;
+        int vi = Array.IndexOf(a, "--content-version");
+        if (vi >= 0) {
+            if (vi + 1 >= a.Length || !uint.TryParse(a[vi + 1], out uint value)) throw new ArgumentException("--content-version needs a numeric content version");
+            version = value; a = a.Where((_, i) => i != vi && i != vi + 1).ToArray();
+        }
+        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp|xci> <update.nsp|-> <out dir> [base RomFS dir] [--content-version <number>] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --aoc-all <merged.nsp|xci> <out dir>"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
         if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
+        if (a[1] == "--aoc-all") return AocAll(ks, a[2], a[3]);
         var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
-        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
-        Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the update NSP");
-        Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control);
-        Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
+        var applications = ReadContentMeta(basePkg).Where(m => m.Type == 0x80).ToArray();
+        if (applications.Select(m => m.TitleId).Distinct().Count() != 1) throw new Exception("the base package must contain exactly one application");
+        var application = applications.OrderByDescending(m => m.Version).First();
+        var patches = ReadContentMeta(updPkg ?? basePkg).Where(m => m.Type == 0x81 && m.TitleId == (application.TitleId | 0x800)).ToArray();
+        if (updPkg != null && patches.Length == 0) throw new Exception("the update package has no patch for the base application");
+        if (version.HasValue) {
+            patches = patches.Where(m => m.Version == version.Value && version.Value != 0).ToArray();
+            if (version.Value != 0 && patches.Length == 0) throw new Exception($"the package has no patch with content version {version.Value}");
+        }
+        var patch = patches.OrderByDescending(m => m.Version).FirstOrDefault();
+        Nca baseProg = ContentNca(application, 1) ?? throw new Exception("no Program NCA in the application metadata");
+        Nca updProg = patch == null ? null : ContentNca(patch, 1) ?? throw new Exception("no Program NCA in the patch metadata");
+        Nca ctrl = (patch == null ? null : ContentNca(patch, 3)) ?? ContentNca(application, 3);
+        Console.WriteLine($"title {application.TitleId:x16}" + (patch != null ? $", update {patch.TitleId:x16}, version {patch.Version}" : ""));
         string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
             byte[] nacp = Nacp(ctrl);
@@ -82,7 +103,19 @@ static class P {
         Console.WriteLine($"add-on content {data.Header.TitleId:x16}");
         Directory.CreateDirectory(outDir);
         Copy(new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), outDir, null);
-        return 0;
+        return Damaged();
+    }
+
+    static int AocAll(KeySet ks, string path, string outDir) {
+        var metadata = ReadContentMeta(OpenNsp(ks, path));
+        ulong app = metadata.Where(m => m.Type == 0x80).Select(m => m.TitleId).Distinct().Single();
+        foreach (var group in metadata.Where(m => m.Type == 0x82 && m.TitleId >= app + 0x1000 && m.TitleId < app + 0x2000).GroupBy(m => m.TitleId)) {
+            var meta = group.OrderByDescending(m => m.Version).First();
+            Nca data = ContentNca(meta, 2) ?? throw new InvalidDataException("no data NCA in the add-on content metadata");
+            Console.WriteLine($"add-on content {meta.TitleId:x16}, version {meta.Version}");
+            Copy(new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), Path.Combine(outDir, (meta.TitleId - app - 0x1000).ToString()), null);
+        }
+        return Damaged();
     }
 
     // Open an NSP (PFS0) or the secure partition of an XCI, import the common tickets, list all NCAs
@@ -105,11 +138,48 @@ static class P {
                 byte[] t = new byte[0x2c0]; st.Read(0, t).ThrowIfFailure();
                 if (t[0x281] != 0) { Console.Error.WriteLine($"[RED] {e.Name} is not a common ticket; supply the title key separately"); continue; }
                 ks.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0, 0x10)), new AccessKey(t.AsSpan(0x180, 0x10))).ThrowIfFailure();
-            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) ncas.Add(new Nca(ks, st));
+            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) {
+                var nca = new Nca(ks, st); ncas.Add(nca);
+                g_contentIds[nca] = e.Name.Split('.')[0];
+            }
         }
         return ncas;
     }
     static Nca Pick(List<Nca> l, NcaContentType t) { foreach (Nca n in l) if (n.Header.ContentType == t) return n; return null; }
+
+    // A merged cartridge may enumerate the patch before the base, and both Program headers can have the application's title ID.
+    // CNMT content IDs, rather than file order or the NCA title ID, identify the matching base, patch and control content.
+    static readonly Dictionary<Nca, string> g_contentIds = new();
+    sealed record ContentMeta(ulong TitleId, uint Version, byte Type, byte[] Data, int EntriesOffset, int Count, List<Nca> Package);
+    static List<ContentMeta> ReadContentMeta(List<Nca> package) {
+        var result = new List<ContentMeta>();
+        foreach (Nca nca in package.Where(n => n.Header.ContentType == NcaContentType.Meta)) {
+            var fs = nca.OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+            foreach (var entry in fs.EnumerateEntries("*.cnmt", SearchOptions.Default)) {
+                using var f = new UniqueRef<IFile>();
+                fs.OpenFile(ref f.Ref, entry.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+                f.Get.GetSize(out long size).ThrowIfFailure();
+                if (size < 0x20 || size > 1 << 24) throw new InvalidDataException("invalid CNMT size");
+                byte[] data = new byte[size]; f.Get.Read(out long read, 0, data, ReadOption.None).ThrowIfFailure();
+                if (read != size) throw new EndOfStreamException("truncated CNMT");
+                int offset = 0x20 + BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(0xe));
+                int count = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(0x10));
+                if (offset > data.Length || count > (data.Length - offset) / 0x38) throw new InvalidDataException("truncated CNMT content list");
+                result.Add(new ContentMeta(BinaryPrimitives.ReadUInt64LittleEndian(data), BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(8)), data[0xc], data, offset, count, package));
+            }
+        }
+        return result;
+    }
+    static Nca ContentNca(ContentMeta meta, byte type) {
+        for (int i = 0; i < meta.Count; i++) {
+            var entry = meta.Data.AsSpan(meta.EntriesOffset + i * 0x38, 0x38);
+            if (entry[0x36] != type || entry[0x37] != 0) continue;
+            string id = Convert.ToHexString(entry.Slice(0x20, 0x10));
+            return meta.Package.SingleOrDefault(n => string.Equals(g_contentIds[n], id, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidDataException($"content {id.ToLowerInvariant()} is missing from the package");
+        }
+        return null;
+    }
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order
     static readonly string[] IconLangs = { "AmericanEnglish", "BritishEnglish", "Japanese", "French", "German", "LatinAmericanSpanish", "Spanish", "Italian",
